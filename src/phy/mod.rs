@@ -265,3 +265,8 @@ pub trait TxToken {
     fn consume<R, F>(self, timestamp: Instant, len: usize, f: F) -> Result<R>
         where F: FnOnce(&mut [u8]) -> Result<R>;
 }
+
+/// Ethernet header length to be added to the MTU, since the header is not counted into MTU
+/// 6 bytes src addr, 6 bytes dst addr, 2 bytes EthType,
+/// the optionbal 4 bytes of IEEE 802.1Q Header are not accounted for
+pub const ETHERNET_HAEDER_MAX_LEN: usize = 14;

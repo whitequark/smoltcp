@@ -5,7 +5,7 @@ use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
 
 use Result;
-use phy::{self, sys, DeviceCapabilities, Device};
+use phy::{self, sys, DeviceCapabilities, Device, ETHERNET_HAEDER_MAX_LEN};
 use time::Instant;
 
 /// A virtual Ethernet interface.
@@ -33,7 +33,7 @@ impl TapInterface {
         let mtu = lower.interface_mtu()?;
         Ok(TapInterface {
             lower: Rc::new(RefCell::new(lower)),
-            mtu:   mtu
+            mtu:   mtu + ETHERNET_HAEDER_MAX_LEN
         })
     }
 }

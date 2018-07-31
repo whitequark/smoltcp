@@ -34,6 +34,7 @@ verbose = []
 "phy-raw_socket" = ["std", "libc"]
 "phy-tap_interface" = ["std", "libc"]
 "proto-ipv4" = []
+"fragmentation-ipv4" = ["proto-ipv4"] # TODO: make dependent on alloc or std
 "proto-ipv6" = []
 "socket-raw" = []
 "socket-udp" = []
@@ -44,7 +45,8 @@ default = [
   "std", "log", # needed for `cargo test --no-default-features --features default` :/
   "phy-raw_socket", "phy-tap_interface",
   "proto-ipv4", "proto-ipv6",
-  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp"
+  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp",
+  "fragmentation-ipv4"
 ]
 
 [[example]]
@@ -67,6 +69,10 @@ required-features = ["std", "phy-tap_interface", "proto-ipv4", "proto-ipv6", "so
 [[example]]
 name = "server"
 required-features = ["std", "phy-tap_interface", "proto-ipv4", "socket-tcp", "socket-udp"]
+
+[[example]]
+name = "server_fragmented"
+required-features = ["std", "phy-tap_interface", "proto-ipv4", "socket-tcp", "socket-udp", "fragmentation-ipv4"]
 
 [[example]]
 name = "client"

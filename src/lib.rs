@@ -150,6 +150,13 @@ pub enum Error {
     /// E.g. a TCP packet addressed to a socket that doesn't exist.
     Dropped,
 
+    /// Fragmentation was enabled, but no FragmentSet was provided
+    NoFragmentSet,
+    /// FragmentSet full
+    FragmentSetFull,
+    /// Fragment reassembly error, typically too many fragments
+    TooManyFragments,
+
     #[doc(hidden)]
     __Nonexhaustive
 }
@@ -169,6 +176,9 @@ impl fmt::Display for Error {
             &Error::Fragmented    => write!(f, "fragmented packet"),
             &Error::Malformed     => write!(f, "malformed packet"),
             &Error::Dropped       => write!(f, "dropped by socket"),
+            &Error::NoFragmentSet => write!(f, "no fragment set provided"),
+            &Error::FragmentSetFull => write!(f, "fragment set full"),
+            &Error::TooManyFragments => write!(f, "too many fragments"),
             &Error::__Nonexhaustive => unreachable!()
         }
     }

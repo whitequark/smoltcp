@@ -5,7 +5,7 @@ use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
 
 use Result;
-use phy::{self, sys, DeviceCapabilities, Device};
+use phy::{self, sys, DeviceCapabilities, Device, ETHERNET_HAEDER_MAX_LEN};
 use time::Instant;
 
 /// A socket that captures or transmits the complete frame.
@@ -32,7 +32,7 @@ impl RawSocket {
         let mtu = lower.interface_mtu()?;
         Ok(RawSocket {
             lower: Rc::new(RefCell::new(lower)),
-            mtu:   mtu
+            mtu:   mtu + ETHERNET_HAEDER_MAX_LEN
         })
     }
 }

@@ -216,6 +216,16 @@ impl Assembler {
             Some(front.data_size)
         }
     }
+
+    /// Return length of the front contiguous range without removing it from the assembler
+    pub fn peek_front(&self) -> Option<usize> {
+        let front = self.front();
+        if front.has_hole() {
+            None
+        } else {
+            Some(front.data_size)
+        }
+    }
 }
 
 #[cfg(test)]

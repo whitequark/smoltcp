@@ -273,7 +273,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             Err(Error::Truncated)
         } else if self.header_len() as u16 > self.total_len() {
             Err(Error::Malformed)
-        } else if len < self.total_len() as usize {
+        } else if len < self.total_len() as usize && self.dont_frag() {
             Err(Error::Truncated)
         } else {
             Ok(())
@@ -558,8 +558,12 @@ impl Repr {
         if packet.version() != 4 { return Err(Error::Malformed) }
         // Valid checksum is expected.
         if checksum_caps.ipv4.rx() && !packet.verify_checksum() { return Err(Error::Checksum) }
-        // We do not support fragmentation.
-        if packet.more_frags() || packet.frag_offset() != 0 { return Err(Error::Fragmented) }
+        #[cfg(not(feature = "fragmentation-ipv4"))]
+        {
+            // We do not support fragmentation.
+            if packet.more_frags() || packet.frag_offset() != 0 { return Err(Error::Fragmented) }
+        }
+
         // Since the packet is not fragmented, it must include the entire payload.
         let payload_len = packet.total_len() as usize - packet.header_len() as usize;
         if packet.payload().len() < payload_len  { return Err(Error::Truncated) }

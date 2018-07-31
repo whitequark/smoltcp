@@ -154,13 +154,13 @@ impl<'a, 'b> RawSocket<'a, 'b> {
                              Result<()>
             where F: FnOnce((IpRepr, &[u8])) -> Result<()> {
         fn prepare<'a>(protocol: IpProtocol, buffer: &'a mut [u8],
-                   checksum_caps: &ChecksumCapabilities) -> Result<(IpRepr, &'a [u8])> {
+                   _checksum_caps: &ChecksumCapabilities) -> Result<(IpRepr, &'a [u8])> {
             match IpVersion::of_packet(buffer.as_ref())? {
                 #[cfg(feature = "proto-ipv4")]
                 IpVersion::Ipv4 => {
                     let mut packet = Ipv4Packet::new_checked(buffer.as_mut())?;
                     if packet.protocol() != protocol { return Err(Error::Unaddressable) }
-                    if checksum_caps.ipv4.tx() {
+                    if _checksum_caps.ipv4.tx() {
                         packet.fill_checksum();
                     } else {
                         // make sure we get a consistently zeroed checksum,
@@ -169,7 +169,7 @@ impl<'a, 'b> RawSocket<'a, 'b> {
                     }
 
                     let packet = Ipv4Packet::new_unchecked(&*packet.into_inner());
-                    let ipv4_repr = Ipv4Repr::parse(&packet, checksum_caps)?;
+                    let ipv4_repr = Ipv4Repr::parse(&packet, _checksum_caps)?;
                     Ok((IpRepr::Ipv4(ipv4_repr), packet.payload()))
                 }
                 #[cfg(feature = "proto-ipv6")]
