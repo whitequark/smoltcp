@@ -1646,8 +1646,8 @@ impl<'a> TcpSocket<'a> {
     }
 }
 
-impl<'a> Into<Socket<'a, 'static>> for TcpSocket<'a> {
-    fn into(self) -> Socket<'a, 'static> {
+impl<'a, 'b> Into<Socket<'a, 'b>> for TcpSocket<'a> {
+    fn into(self) -> Socket<'a, 'b> {
         Socket::Tcp(self)
     }
 }

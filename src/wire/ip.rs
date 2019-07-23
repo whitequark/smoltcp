@@ -224,6 +224,16 @@ impl From<::std::net::IpAddr> for Address {
     }
 }
 
+impl From<Address> for ::std::net::IpAddr {
+    fn from(x: Address) -> ::std::net::IpAddr {
+        match x {
+            Address::Ipv4(ipv4) => ::std::net::IpAddr::V4(ipv4.into()),
+            Address::Ipv6(ipv6) => ::std::net::IpAddr::V6(ipv6.into()),
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[cfg(all(feature = "std", feature = "proto-ipv4"))]
 impl From<::std::net::Ipv4Addr> for Address {
     fn from(ipv4: ::std::net::Ipv4Addr) -> Address {

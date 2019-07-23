@@ -295,6 +295,7 @@ impl Client {
             server_identifier: None,
             parameter_request_list: None,
             dns_servers: None,
+            ip_lease_time: None,
         };
         let mut send_packet = |iface, endpoint, dhcp_repr| {
             send_packet(iface, raw_socket, &endpoint, &dhcp_repr, checksum_caps)

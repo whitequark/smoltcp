@@ -52,6 +52,7 @@ pub enum DhcpOption<'a> {
     ServerIdentifier(Ipv4Address),
     Router(Ipv4Address),
     SubnetMask(Ipv4Address),
+    IpLeaseTime(u32),
     Other { kind: u8, data: &'a [u8] }
 }
 
@@ -122,6 +123,7 @@ impl<'a> DhcpOption<'a> {
             &DhcpOption::SubnetMask(ip) => {
                 2 + ip.as_bytes().len()
             },
+            &DhcpOption::IpLeaseTime(_) => 2 + 4,
             &DhcpOption::Other { data, .. } => 2 + data.len()
         }
     }
@@ -166,6 +168,10 @@ impl<'a> DhcpOption<'a> {
                     &DhcpOption::SubnetMask(mask)  => {
                         buffer[0] = field::OPT_SUBNET_MASK;
                         buffer[2..6].copy_from_slice(mask.as_bytes());
+                    }
+                    &DhcpOption::IpLeaseTime(value) => {
+                        buffer[0] = field::OPT_IP_LEASE_TIME;
+                        NetworkEndian::write_u32(&mut buffer[2..6], value);
                     }
                     &DhcpOption::Other { kind, data: provided } => {
                         buffer[0] = kind;
@@ -661,7 +667,32 @@ pub struct Repr<'a> {
     pub parameter_request_list: Option<&'a [u8]>,
     /// DNS servers
     pub dns_servers: Option<[Option<Ipv4Address>; 3]>,
+    /// IP Address Lease Time
+    pub ip_lease_time: Option<u32>,
 }
+
+impl<'a> Default for Repr<'a> {
+    fn default() -> Self {
+        Self {
+            message_type: MessageType::Unknown(0),
+            transaction_id: 0,
+            client_hardware_address: Default::default(),
+            client_ip: Ipv4Address::UNSPECIFIED,
+            your_ip: Ipv4Address::UNSPECIFIED,
+            server_ip: Ipv4Address::UNSPECIFIED,
+            router: None,
+            subnet_mask: None,
+            relay_agent_ip: Ipv4Address::UNSPECIFIED,
+            broadcast: false,
+            requested_ip: None,
+            client_identifier: None,
+            server_identifier: None,
+            parameter_request_list: None,
+            dns_servers: None,
+            ip_lease_time: None,
+        }
+    }
+ }
 
 impl<'a> Repr<'a> {
     /// Return the length of a packet that will be emitted from this high-level representation.
@@ -672,7 +703,17 @@ impl<'a> Repr<'a> {
         if self.requested_ip.is_some() { len += 6; }
         if self.client_identifier.is_some() { len += 9; }
         if self.server_identifier.is_some() { len += 6; }
+        if self.subnet_mask.is_some() { len += 6; }
+        if let Some(value) = self.router {
+            len += DhcpOption::Router(value).buffer_len();
+        }
+        if let Some(value) = self.ip_lease_time {
+            len += DhcpOption::IpLeaseTime(value).buffer_len();
+        }
         if let Some(list) = self.parameter_request_list { len += list.len() + 2; }
+        if let Some(servers) = self.dns_servers {
+            len += servers.iter().filter(|s| s.is_some()).count() * 4 + 2;
+        }
 
         len
     }
@@ -710,6 +751,7 @@ impl<'a> Repr<'a> {
         let mut subnet_mask = None;
         let mut parameter_request_list = None;
         let mut dns_servers = None;
+        let mut ip_lease_time = None;
 
         let mut options = packet.options()?;
         while options.len() > 0 {
@@ -737,6 +779,9 @@ impl<'a> Repr<'a> {
                 DhcpOption::SubnetMask(mask) => {
                     subnet_mask = Some(mask);
                 }
+                DhcpOption::IpLeaseTime(value) => {
+                    ip_lease_time = Some(value);
+                }
                 DhcpOption::Other {kind: field::OPT_PARAMETER_REQUEST_LIST, data} => {
                     parameter_request_list = Some(data);
                 }
@@ -760,7 +805,7 @@ impl<'a> Repr<'a> {
         Ok(Repr {
             transaction_id, client_hardware_address, client_ip, your_ip, server_ip, relay_agent_ip,
             broadcast, requested_ip, server_identifier, router,
-            subnet_mask, client_identifier, parameter_request_list, dns_servers,
+            subnet_mask, client_identifier, parameter_request_list, dns_servers, ip_lease_time,
             message_type: message_type?,
         })
     }
@@ -805,6 +850,28 @@ impl<'a> Repr<'a> {
             if let Some(list) = self.parameter_request_list {
                 let option = DhcpOption::Other{ kind: field::OPT_PARAMETER_REQUEST_LIST, data: list };
                 let tmp = options; options = option.emit(tmp);
+            }
+            if let Some(dns_servers) = self.dns_servers {
+                let mut data: [u8; 3 * 4] = Default::default();
+                let mut i = 0;
+                while i < dns_servers.len() {
+                    if let Some(dns_server) = dns_servers[i] {
+                        data[i * 4..(i + 1) * 4].copy_from_slice(dns_server.as_bytes());
+                    } else {
+                        break;
+                    }
+                    i += 1;
+                }
+                let option = DhcpOption::Other {
+                    kind: field::OPT_DOMAIN_NAME_SERVER,
+                    data: &data[0..i * 4],
+                };
+                let tmp = options;
+                options = option.emit(tmp);
+            }
+            if let Some(value) = self.ip_lease_time {
+                let tmp = options;
+                options = DhcpOption::IpLeaseTime(value).emit(tmp);
             }
             DhcpOption::EndOfList.emit(options);
         }
