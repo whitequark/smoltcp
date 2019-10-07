@@ -114,8 +114,7 @@ mod field {
 
 macro_rules! fc_bit_field {
     ($field:ident, $bit:literal) => {
-        #[allow(unused)]
-        fn $field(&self) -> bool {
+        pub fn $field(&self) -> bool {
             true
         }
     }
