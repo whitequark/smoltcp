@@ -1,5 +1,7 @@
 use core::fmt;
 
+use byteorder::{ByteOrder, LittleEndian};
+
 // use {Error, Result};
 use Result;
 
@@ -50,6 +52,11 @@ impl fmt::Display for AddressingMode {
         }
     }
 }
+
+/// A IEEE 802.15.4 PAN.
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub struct Pan(u16);
+
 
 /// A IEEE 802.15.4 address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -179,20 +186,51 @@ impl<T: AsRef<[u8]>> Frame<T> {
         AddressingMode::from(raw)
     }
 
+    /// Return the destination PAN field.
+    #[inline]
+    pub fn dst_pan(&self) -> Option<Pan> {
+        let data = self.addressing_fields();
+        match self.dst_addressing_mode() {
+            AddressingMode::Absent => None,
+            AddressingMode::Short | AddressingMode::Extended => {
+                Some(Pan(LittleEndian::read_u16(&data[0..2])))
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    /// Return the destination PAN field.
+    #[inline]
+    pub fn src_pan(&self) -> Option<Pan> {
+        let data = self.addressing_fields();
+        let offset = match self.dst_addressing_mode() {
+            AddressingMode::Absent => 0,
+            AddressingMode::Short => 2,
+            AddressingMode::Extended => 8,
+            _ => unreachable!(),
+        } + 2;
+
+        match self.src_addressing_mode() {
+            AddressingMode::Absent => None,
+            AddressingMode::Short => {
+                Some(Pan(LittleEndian::read_u16(&data[offset..offset+2])))
+            },
+            _ => unreachable!(),
+        }
+    }
+
     /// Return the destination address field.
     #[inline]
     pub fn dst_addr(&self) -> Address {
-        let data = self.buffer.as_ref();
+        let data = self.addressing_fields();
         match self.dst_addressing_mode() {
             AddressingMode::Absent => Address::Absent,
             AddressingMode::Short => {
-                let data = &data[field::ADDRESSING];
                 let mut raw = [0u8; 2];
                 raw.clone_from_slice(&data[2..4]);
                 Address::short_from_bytes(raw)
             },
             AddressingMode::Extended => {
-                let data = &data[field::ADDRESSING];
                 let mut raw = [0u8; 8];
                 raw.clone_from_slice(&data[2..10]);
                 Address::extended_from_bytes(raw)
@@ -204,7 +242,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Return the source address field.
     #[inline]
     pub fn src_addr(&self) -> Address {
-        let data = self.buffer.as_ref();
+        let data = self.addressing_fields();
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => 0,
             AddressingMode::Short => 2,
@@ -215,19 +253,22 @@ impl<T: AsRef<[u8]>> Frame<T> {
         match self.src_addressing_mode() {
             AddressingMode::Absent => Address::Absent,
             AddressingMode::Short => {
-                let data = &data[field::ADDRESSING];
                 let mut raw = [0u8; 2];
                 raw.clone_from_slice(&data[offset..offset+2]);
                 Address::short_from_bytes(raw)
             },
             AddressingMode::Extended => {
-                let data = &data[field::ADDRESSING];
                 let mut raw = [0u8; 8];
                 raw.clone_from_slice(&data[offset..offset+8]);
                 Address::extended_from_bytes(raw)
             },
             _ => unreachable!(),
         }
+    }
+
+    #[inline]
+    fn addressing_fields(&self) -> &[u8] {
+        &self.buffer.as_ref()[field::ADDRESSING]
     }
 }
 
