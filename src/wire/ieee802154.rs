@@ -122,7 +122,10 @@ mod field {
 macro_rules! fc_bit_field {
     ($field:ident, $bit:literal) => {
         pub fn $field(&self) -> bool {
-            true
+            let data = self.buffer.as_ref();
+            let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+
+            ((raw >> $bit) & 0b1) == 0b1
         }
     }
 }
