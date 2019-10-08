@@ -295,9 +295,27 @@ mod test {
         assert!(!Address::BROADCAST.is_unicast());
     }
 
-    #[test]
-    fn test_vector() -> Result<()> {
-        let frame = &[
+    macro_rules! vector_test {
+        ($name:ident $bytes:expr ; $($test_method:ident -> $expected:expr,)*) => {
+            #[test]
+            fn $name() -> Result<()> {
+                let frame = &$bytes;
+                // let _frame = Frame::new_checked(frame)?;
+                let frame = Frame::new_unchecked(frame);
+
+                $(
+                    let v = frame.$test_method();
+                    assert_eq!($expected, v, stringify!($test_method));
+                );*
+
+                Ok(())
+            }
+        }
+    }
+
+    vector_test! {
+        extended_addr
+        [
             0b0000_0001, 0b1100_1100, // frame control
             0b0, // seq
             0x03, 0x03, // pan id
@@ -305,16 +323,27 @@ mod test {
             0x03, 0x04, // pan id
             0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, // src addr
         ];
-        // let _frame = Frame::new_checked(frame)?;
-        let frame = Frame::new_unchecked(frame);
+        frame_type -> FrameType::Data,
+        dst_addr -> Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01]),
+        src_addr -> Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02]),
+    }
 
-        assert_eq!(frame.frame_type(), FrameType::Data);
-
-        assert_eq!(frame.dst_addr(),
-            Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01]));
-        assert_eq!(frame.src_addr(),
-            Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02]));
-
-        Ok(())
+    vector_test! {
+        short_addr
+        [
+            0x01, 0x98,             // frame control
+            0x00,                   // sequence number
+            0x34, 0x12, 0x78, 0x56, // PAN identifier and address of destination
+            0x34, 0x12, 0xbc, 0x9a, // PAN identifier and address of source
+        ];
+        frame_type -> FrameType::Data,
+        security_enabled -> false,
+        frame_pending -> false,
+        ack_request -> false,
+        pan_id_compression -> false,
+        dst_addr -> Address::Short([0x78, 0x56]),
+        src_addr -> Address::Short([0xbc, 0x9a]),
+        dst_pan -> Some(Pan(0x1234)),
+        src_pan -> Some(Pan(0x1234)),
     }
 }
