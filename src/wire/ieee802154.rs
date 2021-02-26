@@ -24,11 +24,11 @@ impl fmt::Display for FrameType {
         match self {
             FrameType::Beacon => write!(f, "Beacon"),
             FrameType::Data => write!(f, "Data"),
-            FrameType::Acknowledgement  => write!(f, "Ack"),
-            FrameType::MacCommand  => write!(f, "MAC command"),
-            FrameType::Multipurpose =>  write!(f, "Multipurpose"),
-            FrameType::FragmentOrFrak =>  write!(f, "FragmentOrFrak"),
-            FrameType::Extended =>  write!(f, "Extended"),
+            FrameType::Acknowledgement => write!(f, "Ack"),
+            FrameType::MacCommand => write!(f, "MAC command"),
+            FrameType::Multipurpose => write!(f, "Multipurpose"),
+            FrameType::FragmentOrFrak => write!(f, "FragmentOrFrak"),
+            FrameType::Extended => write!(f, "Extended"),
             FrameType::Unknown(id) => write!(f, "0b{:04b}", id),
         }
     }
@@ -47,7 +47,7 @@ impl fmt::Display for AddressingMode {
         match self {
             AddressingMode::Absent => write!(f, "Absent"),
             AddressingMode::Short => write!(f, "Short"),
-            AddressingMode::Extended  => write!(f, "Extended"),
+            AddressingMode::Extended => write!(f, "Extended"),
             AddressingMode::Unknown(id) => write!(f, "0b{:04b}", id),
         }
     }
@@ -56,7 +56,6 @@ impl fmt::Display for AddressingMode {
 /// A IEEE 802.15.4 PAN.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct Pan(u16);
-
 
 /// A IEEE 802.15.4 address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -94,12 +93,14 @@ impl fmt::Display for Address {
         match self {
             Self::Absent => write!(f, "not-present"),
             Self::Short(bytes) => {
-                write!(f, "{:02x}-{:02x}",
-                   bytes[0], bytes[1])
-            },
+                write!(f, "{:02x}-{:02x}", bytes[0], bytes[1])
+            }
             Self::Extended(bytes) => {
-                write!(f, "{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
-                   bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7])
+                write!(
+                    f,
+                    "{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]
+                )
             }
         }
     }
@@ -108,14 +109,15 @@ impl fmt::Display for Address {
 /// A read/write wrapper around an IEEE 802.15.4 frame buffer.
 #[derive(Debug, Clone)]
 pub struct Frame<T: AsRef<[u8]>> {
-    buffer: T
+    buffer: T,
 }
 
 mod field {
     use wire::field::*;
 
-    pub const FRAMECONTROL: Field =  0..2;
-    pub const ADDRESSING:    Rest  =  3..;
+    pub const FRAMECONTROL: Field = 0..2;
+    pub const SEQUENCE_NUMBER: Field = 2..3;
+    pub const ADDRESSING: Rest = 3..;
     // pub const DESTINATION:  Field =  0..2;
 }
 
@@ -127,7 +129,7 @@ macro_rules! fc_bit_field {
 
             ((raw >> $bit) & 0b1) == 0b1
         }
-    }
+    };
 }
 
 impl<T: AsRef<[u8]>> Frame<T> {
@@ -171,15 +173,6 @@ impl<T: AsRef<[u8]>> Frame<T> {
     fc_bit_field!(ack_request, 5);
     fc_bit_field!(pan_id_compression, 6);
 
-    /// Return the source addressing mode.
-    #[inline]
-    pub fn src_addressing_mode(&self) -> AddressingMode {
-        let data = self.buffer.as_ref();
-        let raw = &data[field::FRAMECONTROL];
-        let raw = (raw[1] >> 6 & 0b11) as u8;
-        AddressingMode::from(raw)
-    }
-
     /// Return the destination addressing mode.
     #[inline]
     pub fn dst_addressing_mode(&self) -> AddressingMode {
@@ -189,22 +182,73 @@ impl<T: AsRef<[u8]>> Frame<T> {
         AddressingMode::from(raw)
     }
 
-    /// Return the destination PAN field.
+    /// Return the destination addressing mode.
     #[inline]
-    pub fn dst_pan(&self) -> Option<Pan> {
+    pub fn frame_version(&self) -> u8 {
+        let data = self.buffer.as_ref();
+        let raw = &data[field::FRAMECONTROL];
+        let raw = (raw[1] >> 4 & 0b11) as u8;
+        raw
+    }
+
+    /// Return the source addressing mode.
+    #[inline]
+    pub fn src_addressing_mode(&self) -> AddressingMode {
+        let data = self.buffer.as_ref();
+        let raw = &data[field::FRAMECONTROL];
+        let raw = (raw[1] >> 6 & 0b11) as u8;
+        AddressingMode::from(raw)
+    }
+
+    #[inline]
+    pub fn sequence_number(&self) -> u8 {
+        let data = self.buffer.as_ref();
+        let raw = data[field::SEQUENCE_NUMBER][0];
+        raw
+    }
+
+    #[inline]
+    fn addressing_fields(&self) -> &[u8] {
+        &self.buffer.as_ref()[field::ADDRESSING]
+    }
+
+    /// Return the destination PAN field.
+    pub fn dst_pan_id(&self) -> Option<Pan> {
         let data = self.addressing_fields();
         match self.dst_addressing_mode() {
             AddressingMode::Absent => None,
             AddressingMode::Short | AddressingMode::Extended => {
                 Some(Pan(LittleEndian::read_u16(&data[0..2])))
-            },
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Return the destination address field.
+    pub fn dst_addr(&self) -> Address {
+        let data = self.addressing_fields();
+        match self.dst_addressing_mode() {
+            AddressingMode::Absent => Address::Absent,
+            AddressingMode::Short => {
+                let mut raw = [0u8; 2];
+                raw.clone_from_slice(&data[2..4]);
+                Address::short_from_bytes(raw)
+            }
+            AddressingMode::Extended => {
+                let mut raw = [0u8; 8];
+                raw.clone_from_slice(&data[2..10]);
+                Address::extended_from_bytes(raw)
+            }
             _ => unreachable!(),
         }
     }
 
     /// Return the destination PAN field.
-    #[inline]
-    pub fn src_pan(&self) -> Option<Pan> {
+    pub fn src_pan_id(&self) -> Option<Pan> {
+        if self.pan_id_compression() {
+            return None;
+        }
+
         let data = self.addressing_fields();
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => 0,
@@ -215,70 +259,95 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
         match self.src_addressing_mode() {
             AddressingMode::Absent => None,
-            AddressingMode::Short => {
-                Some(Pan(LittleEndian::read_u16(&data[offset..offset+2])))
-            },
-            _ => unreachable!(),
-        }
-    }
-
-    /// Return the destination address field.
-    #[inline]
-    pub fn dst_addr(&self) -> Address {
-        let data = self.addressing_fields();
-        match self.dst_addressing_mode() {
-            AddressingMode::Absent => Address::Absent,
-            AddressingMode::Short => {
-                let mut raw = [0u8; 2];
-                raw.clone_from_slice(&data[2..4]);
-                Address::short_from_bytes(raw)
-            },
-            AddressingMode::Extended => {
-                let mut raw = [0u8; 8];
-                raw.clone_from_slice(&data[2..10]);
-                Address::extended_from_bytes(raw)
-            },
+            AddressingMode::Short => Some(Pan(LittleEndian::read_u16(&data[offset..offset + 2]))),
             _ => unreachable!(),
         }
     }
 
     /// Return the source address field.
-    #[inline]
     pub fn src_addr(&self) -> Address {
+        let data = self.addressing_fields();
+        let mut offset = match self.dst_addressing_mode() {
+            AddressingMode::Absent => 0,
+            AddressingMode::Short => 2,
+            AddressingMode::Extended => 8,
+            _ => unreachable!(),
+        } + 2;
+
+        if !self.pan_id_compression() {
+            offset += 2;
+        }
+
+        match self.src_addressing_mode() {
+            AddressingMode::Absent => Address::Absent,
+            AddressingMode::Short => {
+                let mut raw = [0u8; 2];
+                raw.clone_from_slice(&data[offset..offset + 2]);
+                Address::short_from_bytes(raw)
+            }
+            AddressingMode::Extended => {
+                let mut raw = [0u8; 8];
+                raw.clone_from_slice(&data[offset..offset + 8]);
+                Address::extended_from_bytes(raw)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Return the Auxilliary Security Header Field
+    #[inline]
+    pub fn aux_security_header(&self) -> Option<&[u8]> {
+        if self.security_enabled() {
+            todo!();
+        } else {
+            None
+        }
+    }
+
+    /// Return the Frame Payload Field
+    pub fn payload(&self) -> &[u8] {
         let data = self.addressing_fields();
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => 0,
             AddressingMode::Short => 2,
             AddressingMode::Extended => 8,
             _ => unreachable!(),
-        } + 2 + 2; // + both pan offsets
+        } + 2;
 
-        match self.src_addressing_mode() {
-            AddressingMode::Absent => Address::Absent,
-            AddressingMode::Short => {
-                let mut raw = [0u8; 2];
-                raw.clone_from_slice(&data[offset..offset+2]);
-                Address::short_from_bytes(raw)
-            },
-            AddressingMode::Extended => {
-                let mut raw = [0u8; 8];
-                raw.clone_from_slice(&data[offset..offset+8]);
-                Address::extended_from_bytes(raw)
-            },
-            _ => unreachable!(),
-        }
+        let offset = offset + if !self.pan_id_compression() { 2 } else { 0 };
+
+        let offset = offset
+            + match self.src_addressing_mode() {
+                AddressingMode::Absent => 0,
+                AddressingMode::Short => 2,
+                AddressingMode::Extended => 8,
+                _ => unreachable!(),
+            };
+
+        &data[offset..data.len() - 2]
     }
 
+    /// Return the FCS fields
     #[inline]
-    fn addressing_fields(&self) -> &[u8] {
-        &self.buffer.as_ref()[field::ADDRESSING]
+    pub fn fcs(&self) -> &[u8] {
+        &self.buffer.as_ref()[self.buffer.as_ref().len() - 2..]
     }
 }
 
 impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "IEEE802.15.4 frame src={} dst={} type={}",
-               self.src_addr(), self.dst_addr(), self.frame_type())
+        write!(
+            f,
+            "IEEE802.15.4 frame type={} seq={:2x} dst_pan={:x?} dest={} src_pan={:?} src={} data={:x?} fcs={:x?}",
+            self.frame_type(),
+            self.sequence_number(),
+            self.dst_pan_id(),
+            self.dst_addr(),
+            self.src_pan_id(),
+            self.src_addr(),
+            self.payload(),
+            self.fcs(),
+        )
     }
 }
 
@@ -343,7 +412,7 @@ mod test {
         pan_id_compression -> false,
         dst_addr -> Address::Short([0x78, 0x56]),
         src_addr -> Address::Short([0xbc, 0x9a]),
-        dst_pan -> Some(Pan(0x1234)),
-        src_pan -> Some(Pan(0x1234)),
+        dst_pan_id -> Some(Pan(0x1234)),
+        src_pan_id -> Some(Pan(0x1234)),
     }
 }
