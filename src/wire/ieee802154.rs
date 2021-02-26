@@ -3,7 +3,7 @@ use core::fmt;
 use byteorder::{ByteOrder, LittleEndian};
 
 // use {Error, Result};
-use Result;
+use crate::Result;
 
 enum_with_unknown! {
     /// IEEE 802.15.4 protocol type.
@@ -113,7 +113,7 @@ pub struct Frame<T: AsRef<[u8]>> {
 }
 
 mod field {
-    use wire::field::*;
+    use crate::wire::field::*;
 
     pub const FRAMECONTROL: Field = 0..2;
     pub const SEQUENCE_NUMBER: Field = 2..3;
@@ -356,7 +356,7 @@ mod test {
     // Tests that are valid with any combination of
     // "proto-*" features.
     use super::*;
-    use Result;
+    use crate::Result;
 
     #[test]
     fn test_broadcast() {
@@ -375,7 +375,7 @@ mod test {
                 $(
                     let v = frame.$test_method();
                     assert_eq!($expected, v, stringify!($test_method));
-                );*
+                )*
 
                 Ok(())
             }
