@@ -1,7 +1,7 @@
 use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
 use super::*;
-use crate::wire::EthernetFrame;
+use crate::wire::ethernet_header_len;
 
 #[derive(Debug)]
 pub struct TapInterfaceDesc {
@@ -48,7 +48,7 @@ impl TapInterfaceDesc {
 
         // SIOCGIFMTU returns the IP MTU (typically 1500 bytes.)
         // smoltcp counts the entire Ethernet packet in the MTU, so add the Ethernet header size to it.
-        Ok(ip_mtu? + EthernetFrame::<&[u8]>::header_len())
+        Ok(ip_mtu? + ethernet_header_len())
     }
 
     pub fn recv(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
