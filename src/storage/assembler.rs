@@ -119,6 +119,12 @@ impl Assembler {
             .sum()
     }
 
+    /// Returns true if the next call to self.add could either fill the assembler or return
+    /// TooManyHolesError. Used in ensure there's space for adding a contig with 0 offset.
+    pub(crate) fn could_saturate(&self) -> bool {
+        self.contigs[self.contigs.len() - 2].has_data()
+    }
+
     fn front(&self) -> Contig {
         self.contigs[0]
     }
@@ -164,9 +170,91 @@ impl Assembler {
         Ok(&mut self.contigs[at])
     }
 
+    pub fn replace_start_with_hole(&mut self, size: usize) {
+        let total_size = self.total_size();
+        let removed = self.remove_beginning(size, false);
+        self.contigs[0].hole_size += removed;
+        if total_size != self.total_size() {
+            debug_assert!(false);
+        }
+    }
+
+    pub fn shift_offset(&mut self, size: usize) {
+        let total_size = self.total_size();
+        self.remove_beginning(size, true);
+        if total_size != self.total_size() {
+            debug_assert!(false);
+        }
+    }
+
+    fn remove_beginning(&mut self, mut size: usize, add_to_end: bool) -> usize {
+        let mut contigs_to_remove = 0;
+        let mut removed = 0;
+
+        while contigs_to_remove != self.contigs.len() {
+            let contig = &mut self.contigs[contigs_to_remove];
+
+            if size <= contig.hole_size {
+                removed += size;
+                contig.hole_size -= size;
+                break;
+            }
+
+            removed += contig.hole_size;
+            size -= contig.hole_size;
+            contig.hole_size = 0;
+
+            if size < contig.data_size {
+                contig.data_size -= size;
+                removed += size;
+                break;
+            }
+
+            removed += contig.data_size;
+            size -= contig.data_size;
+            contigs_to_remove += 1;
+
+            if size == 0 {
+                break;
+            }
+        }
+
+        if contigs_to_remove == 0 {
+            if add_to_end {
+                for i in 0..self.contigs.len() - contigs_to_remove {
+                    if !self.contigs[i].has_data() {
+                        self.contigs[i].hole_size += removed;
+                        break;
+                    }
+                }
+            }
+            return removed;
+        }
+
+        for i in 0..self.contigs.len() - contigs_to_remove {
+            self.contigs[i] = self.contigs[i + contigs_to_remove];
+            if !self.contigs[i].has_data() {
+                self.contigs[i + contigs_to_remove] = if add_to_end {
+                    Contig::hole(removed)
+                } else {
+                    Contig::empty()
+                };
+                return removed;
+            }
+        }
+
+        removed
+    }
+
     /// Add a new contiguous range to the assembler, and return `Ok(())`,
     /// or return `Err(())` if too many discontiguities are already recorded.
-    pub fn add(&mut self, mut offset: usize, mut size: usize) -> Result<(), TooManyHolesError> {
+    pub fn add(&mut self, offset: usize, size: usize) -> Result<(), TooManyHolesError> {
+        self.add_or_extend(offset, size, false)
+    }
+
+    /// Add a new contiguous range to the assembler, and return `Ok(())`,
+    /// or return `Err(())` if too many discontiguities are already recorded.
+    pub fn add_or_extend(&mut self, mut offset: usize, mut size: usize, extend_only: bool) -> Result<(), TooManyHolesError> {
         let mut index = 0;
         while index != self.contigs.len() && size != 0 {
             let contig = self.contigs[index];
@@ -196,6 +284,9 @@ impl Assembler {
                 // The range being added covers only a part of the data in this contig, skip it.
                 index += 1;
             } else if offset + size < contig.hole_size {
+                if extend_only {
+                    return Err(TooManyHolesError);
+                }
                 // The range being added covers a part of the hole but not of the data
                 // in this contig, add a new contig containing the range.
                 {

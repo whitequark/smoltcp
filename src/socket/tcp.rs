@@ -100,7 +100,7 @@ impl RttEstimator {
         self.rtt = (self.rtt * 7 + new_rtt + 7) / 8;
         let diff = (self.rtt as i32 - new_rtt as i32 ).abs() as u32;
         self.deviation = (self.deviation * 3 + diff + 3) / 4;
-        
+
         self.rto_count = 0;
 
         let rto = self.retransmission_timeout().millis();
@@ -283,6 +283,7 @@ pub struct TcpSocket<'a> {
     state:           State,
     timer:           Timer,
     rtte:            RttEstimator,
+    /// is relative to remote_seq_no (the start of the rx_buffer) + rx_buffer.len()
     assembler:       Assembler,
     rx_buffer:       SocketBuffer<'a>,
     rx_fin_received: bool,
@@ -353,9 +354,24 @@ pub struct TcpSocket<'a> {
     #[cfg(feature = "async")]
     tx_waker: WakerRegistration,
 
+    /// The sACK ranges send in the latest TCP header
+    previous_sack_ranges: [Option<(u32, u32)>; 3],
+    /// Suggestions for ranges that do not need retransmission from peer (via sACK)
+    tx_buffer_sack_ranges: Assembler,
+
+    /// Window size maintained by congestion control algorithm
+    congestion_window_size: usize,
+
+    /// Use to determine when we should increase congestion_window_size in linear growth
+    congestion_acks_received: usize,
+
+    /// Threshold for when to use linear growth for congestion_window_size
+    congestion_slow_start_threshold: usize,
 }
 
 const DEFAULT_MSS: usize = 536;
+const CCA_START_SIZE: usize = 3;
+const CCA_SLOW_START_THRESHOLD: usize = 10;
 
 impl<'a> TcpSocket<'a> {
     #[allow(unused_comparisons)] // small usize platforms always pass rx_capacity check
@@ -374,6 +390,8 @@ impl<'a> TcpSocket<'a> {
         }
         let rx_cap_log2 = mem::size_of::<usize>() * 8 -
             rx_capacity.leading_zeros() as usize;
+
+        let tx_buffer_capacity = tx_buffer.capacity();
 
         TcpSocket {
             meta:            SocketMeta::default(),
@@ -411,6 +429,12 @@ impl<'a> TcpSocket<'a> {
             rx_waker: WakerRegistration::new(),
             #[cfg(feature = "async")]
             tx_waker: WakerRegistration::new(),
+
+            previous_sack_ranges: [None; 3],
+            tx_buffer_sack_ranges: Assembler::new(tx_buffer_capacity),
+            congestion_window_size: DEFAULT_MSS * CCA_START_SIZE,
+            congestion_acks_received: 0,
+            congestion_slow_start_threshold: DEFAULT_MSS * CCA_SLOW_START_THRESHOLD,
         }
     }
 
@@ -1069,35 +1093,70 @@ impl<'a> TcpSocket<'a> {
         // If the remote supports selective acknowledgement, add the option to the outgoing
         // segment.
         if self.remote_has_sack {
-            net_debug!("sending sACK option with current assembler ranges");
-
-            // RFC 2018: The first SACK block (i.e., the one immediately following the kind and
-            // length fields in the option) MUST specify the contiguous block of data containing
-            // the segment which triggered this ACK, unless that segment advanced the
-            // Acknowledgment Number field in the header.
-            reply_repr.sack_ranges[0] = None;
-
+            // sACK is only relevant if we've received data
             if let Some(last_seg_seq) = self.local_rx_last_seq.map(|s| s.0 as u32) {
-                reply_repr.sack_ranges[0] = self.assembler.iter_data(
-                    reply_repr.ack_number.map(|s| s.0 as usize).unwrap_or(0))
-                    .map(|(left, right)| (left as u32, right as u32))
-                    .find(|(left, right)| *left <= last_seg_seq && *right >= last_seg_seq);
-            }
+                net_debug!("sending sACK option with current assembler ranges");
 
-            if reply_repr.sack_ranges[0].is_none() {
-                // The matching segment was removed from the assembler, meaning the acknowledgement
-                // number has advanced, or there was no previous sACK.
-                //
-                // While the RFC says we SHOULD keep a list of reported sACK ranges, and iterate
-                // through those, that is currently infeasable. Instead, we offer the range with
-                // the lowest sequence number (if one exists) to hint at what segments would
-                // most quickly advance the acknowledgement number.
-                reply_repr.sack_ranges[0] = self.assembler.iter_data(
-                    reply_repr.ack_number.map(|s| s.0 as usize).unwrap_or(0))
-                    .map(|(left, right)| (left as u32, right as u32))
-                    .next();
+                // From RFC 2018:
+                // The first SACK block (i.e., the one immediately following the kind and
+                // length fields in the option) MUST specify the contiguous block of data containing
+                // the segment which triggered this ACK, unless that segment advanced the
+                // Acknowledgment Number field in the header.
+
+                let ack_number = reply_repr.ack_number.map(|s| s.0 as usize).unwrap_or(0);
+                for (start, end) in self.assembler.iter_data(ack_number) {
+                    let (start, end) = (start as u32, end as u32);
+
+                    if start <= last_seg_seq && last_seg_seq <= end {
+                        reply_repr.sack_ranges[0] = Some((start, end));
+                        break;
+                    }
+                }
+
+                // From RFC 2018:
+                // The SACK option SHOULD be filled out by repeating the most
+                // recently reported SACK blocks (based on first SACK blocks in
+                // previous SACK options) that are not subsets of a SACK block
+                // already included in the SACK option being constructed.
+
+                if let Some((latest_left, latest_right)) = reply_repr.sack_ranges[0] {
+                    // The new segment can update self.previous_sack_ranges in 3 ways
+                    // TODO(plorio) ensure assembler.put is only called iff ack_reply is called
+                    // 1. Provides a new independent contiguous chunk
+                    // 2. Extends a sACK in self.previous_sack_ranges
+                    // 3. Merges two sACK in self.previous_sack_ranges
+
+                    // In case 1 we want new_chunk, previous_sack_ranges[0], previous_sack_ranges[1]
+                    // In case 2 & 3, affected ranges are inside of reply_repr.sack_ranges[1] and should be excluded
+
+                    if let Some((left, right)) = self.previous_sack_ranges[0] {
+                        if right < latest_left || latest_right < left {
+                            reply_repr.sack_ranges[1] = Some((left, right));
+                        }
+
+                        if let Some((left, right)) = self.previous_sack_ranges[1] {
+                            if right < latest_left || latest_right < left {
+                                if reply_repr.sack_ranges[1].is_some() {
+                                    reply_repr.sack_ranges[2] = Some((left, right));
+                                } else {
+                                    reply_repr.sack_ranges[1] = Some((left, right));
+
+                                    if let Some((left, right)) = self.previous_sack_ranges[2] {
+                                        if right < latest_left || latest_right < left {
+                                            reply_repr.sack_ranges[2] = Some((left, right));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    reply_repr.sack_ranges = self.previous_sack_ranges;
+                }
             }
         }
+
+        self.previous_sack_ranges = reply_repr.sack_ranges;
 
         // Since the sACK option may have changed the length of the payload, update that.
         ip_reply_repr.set_payload_len(reply_repr.buffer_len());
@@ -1364,6 +1423,8 @@ impl<'a> TcpSocket<'a> {
                 self.remote_last_ack = Some(repr.seq_number);
                 if let Some(max_seg_size) = repr.max_seg_size {
                     self.remote_mss = max_seg_size as usize;
+                    self.congestion_window_size = max_seg_size as usize * CCA_START_SIZE;
+                    self.congestion_slow_start_threshold = max_seg_size as usize * CCA_SLOW_START_THRESHOLD;
                 }
                 self.set_state(State::Established);
                 self.timer.set_for_idle(timestamp, self.keep_alive);
@@ -1494,7 +1555,16 @@ impl<'a> TcpSocket<'a> {
                             self.meta.handle, self.local_endpoint, self.remote_endpoint, ack_number,
                             self.local_rx_dup_acks, if self.local_rx_dup_acks == u8::max_value() { "+" } else { "" });
 
-                    if self.local_rx_dup_acks == 3 {
+                    if self.local_rx_dup_acks == 1 {
+                        /* update congestion control use Reno (fast recovery) */
+                        self.congestion_window_size = cmp::max(self.remote_mss, cmp::min(self.remote_win_len, self.congestion_window_size) / 2);
+                        self.congestion_slow_start_threshold = self.congestion_window_size;
+                        self.congestion_acks_received = 0;
+
+                        net_debug!("{}:{}:{}: update congestion window and ss threshold to {}",
+                            self.meta.handle, self.local_endpoint, self.remote_endpoint,
+                            self.congestion_window_size);
+                    } else if self.local_rx_dup_acks == 3 {
                         self.timer.set_for_fast_retransmit();
                         net_debug!("{}:{}:{}: started fast retransmit",
                                 self.meta.handle, self.local_endpoint, self.remote_endpoint);
@@ -1510,6 +1580,25 @@ impl<'a> TcpSocket<'a> {
                     self.local_rx_last_ack = Some(ack_number);
                 }
             };
+
+            if ack_number.0 >= self.local_seq_no.0 {
+                // sACKs are stored relative to local_seq_no so fill in different to keep consistent
+                let ack_update = (ack_number.0 - self.local_seq_no.0) as usize;
+                self.tx_buffer_sack_ranges.shift_offset(ack_update);
+
+                // Update congestion window
+                if self.congestion_window_size < self.congestion_slow_start_threshold {
+                    self.congestion_window_size += self.remote_mss;
+                } else {
+                    self.congestion_acks_received += ack_update;
+
+                    if self.congestion_acks_received >= self.congestion_window_size {
+                        self.congestion_acks_received -= self.congestion_window_size;
+                        self.congestion_window_size += self.remote_mss;
+                    }
+                }
+            }
+
             // We've processed everything in the incoming segment, so advance the local
             // sequence number past it.
             self.local_seq_no = ack_number;
@@ -1523,13 +1612,35 @@ impl<'a> TcpSocket<'a> {
             }
         }
 
+        // Mark sACKs as received in tx_buffer_sack_ranges relative to local_seq_no
+        for sack in &repr.sack_ranges {
+            if let Some((left, right)) = sack {
+                if right < left {
+                    continue;
+                }
+
+                let offset = ((*left as i32) - self.local_seq_no.0) as usize;
+                if offset >= self.tx_buffer.len() {
+                    continue;
+                }
+
+                let len = right - left;
+
+                if len > 0 {
+                    // Note, don't care about failure to insert as sACKs are advisory
+                    let _ = self.tx_buffer_sack_ranges.add(offset, len as usize);
+                }
+            }
+        }
+
         let payload_len = repr.payload.len();
         if payload_len == 0 { return Ok(None) }
 
         let assembler_was_empty = self.assembler.is_empty();
 
-        // Try adding payload octets to the assembler.
-        match self.assembler.add(payload_offset, payload_len) {
+        // Try adding payload octets to the assembler while reserving space for segments of offset 0
+        let only_extend_assembler = self.assembler.could_saturate() && payload_offset != 0;
+        match self.assembler.add_or_extend(payload_offset, payload_len, only_extend_assembler) {
             Ok(()) => {
                 debug_assert!(self.assembler.total_size() == self.rx_buffer.capacity());
                 // Place payload octets into the buffer.
@@ -1618,8 +1729,11 @@ impl<'a> TcpSocket<'a> {
         // We can send data if we have data that:
         // - hasn't been sent before
         // - fits in the remote window
-        let can_data = self.remote_last_seq
-            < self.local_seq_no + core::cmp::min(self.remote_win_len, self.tx_buffer.len());
+        let byte_sendable = core::cmp::min(
+            self.congestion_window_size,
+            core::cmp::min(self.remote_win_len, self.tx_buffer.len())
+        );
+        let can_data = self.remote_last_seq < self.local_seq_no + byte_sendable;
 
         // Do we have to send a FIN?
         let want_fin = match self.state {
@@ -1785,12 +1899,38 @@ impl<'a> TcpSocket<'a> {
             // or the transmit half of the connection is still open.
             State::Established | State::FinWait1 | State::Closing | State::CloseWait | State::LastAck => {
                 // Extract as much data as the remote side can receive in this packet
-                // from the transmit buffer.
-                let offset = self.remote_last_seq - self.local_seq_no;
-                let win_limit = self.local_seq_no + self.remote_win_len - self.remote_last_seq;
-                let size = cmp::min(cmp::min(win_limit, self.remote_mss),
+                // from the transmit buffer. Skip over or truncate data based on sACKs.
+                let original_offset = self.remote_last_seq - self.local_seq_no;
+                let mut offset = original_offset;
+                let mut send_till_offset = cmp::min(self.remote_win_len, self.congestion_window_size);
+
+                for (left, right) in self.tx_buffer_sack_ranges.iter_data(0) {
+                    // there is chunk of ACK'd data to the right of what we want to send
+                    if offset < left {
+                        send_till_offset = cmp::min(left, self.remote_win_len);
+                        break;
+                    }
+
+                    // data already received, move offset to next contig
+                    if offset < right {
+                        offset = right;
+                    }
+                }
+
+                let size = cmp::min(cmp::min(send_till_offset.max(offset) - offset, self.remote_mss),
                      caps.max_transmission_unit - ip_repr.buffer_len() - repr.mss_header_len());
                 repr.payload = self.tx_buffer.get_allocated(offset, size);
+
+                // sACK was used
+                if offset != original_offset {
+                    self.remote_last_seq += offset - original_offset;
+                    repr.seq_number = self.remote_last_seq;
+
+                    // Remove sACKs that were used because on next retransmit timeout we don't want to
+                    // use them.
+                    self.tx_buffer_sack_ranges.replace_start_with_hole(offset + size);
+                }
+
                 // If we've sent everything we had in the buffer, follow it with the PSH or FIN
                 // flags, depending on whether the transmit half of the connection is open.
                 if offset + repr.payload.len() == self.tx_buffer.len() {
@@ -2899,6 +3039,255 @@ mod test {
                 ..RECV_TEMPL
             })));
         }
+    }
+
+    #[test]
+    fn test_established_rfc2018_case_3() {
+        // This test case verifies the exact scenarios described on pages 8-9 of RFC 2018. Please
+        // ensure its behavior does not deviate from those scenarios.
+
+        let (mut s, segment) = setup_rfc2018_cases();
+        // RFC 2018:
+        //
+        // Case 3:  The 2nd, 4th, 6th, and 8th (last) segments are
+        //       dropped.
+        //
+        //       The data receiver ACKs the first packet normally.  The
+        //       third, fifth, and seventh packets trigger SACK options as
+        //       follows:
+        //
+        //             Triggering  ACK    First Block   2nd Block     3rd Block
+        //             Segment            Left   Right  Left   Right  Left   Right
+        //                                Edge   Edge   Edge   Edge   Edge   Edge
+        //
+        //       1.    5000       5500
+        //       2.    5500       (lost)
+        //       3.    6000       5500    6000   6500
+        //       4.    6500       (lost)
+        //       5.    7000       5500    7000   7500   6000   6500
+        //       6.    7500       (lost)
+        //       7.    8000       5500    8000   8500   7000   7500   6000   6500
+        //       8.    8500       (lost)
+        //
+
+        // 1st transmits
+        send!(s, TcpRepr {
+                seq_number: REMOTE_SEQ + 5000 + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &segment,
+                ..SEND_TEMPL
+            });
+
+        recv!(s, [TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 5500),
+                window_len: 3500,
+                sack_ranges: [ None, None, None ],
+                ..RECV_TEMPL
+            }]);
+
+        // 2nd lost
+        // send!(s, TcpRepr {
+        //         seq_number: REMOTE_SEQ + 5500 + 1,
+        //         ack_number: Some(LOCAL_SEQ + 1),
+        //         payload: &segment,
+        //         ..SEND_TEMPL
+        //     });
+
+        // 3rd transmits
+        send!(s, TcpRepr {
+                seq_number: REMOTE_SEQ + 6000 + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &segment,
+                ..SEND_TEMPL
+            }, Ok(Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 5500),
+                window_len: 3500,
+                sack_ranges: [
+                    Some((REMOTE_SEQ.0 as u32 + 1 + 6000,
+                          REMOTE_SEQ.0 as u32 + 1 + 6500)),
+                    None, None],
+                ..RECV_TEMPL
+            })));
+
+        // 4th lost
+        // send!(s, TcpRepr {
+        //         seq_number: REMOTE_SEQ + 6500 + 1,
+        //         ack_number: Some(LOCAL_SEQ + 1),
+        //         payload: &segment,
+        //         ..SEND_TEMPL
+        //     });
+
+        // 5th transmits
+        send!(s, TcpRepr {
+                seq_number: REMOTE_SEQ + 7000 + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &segment,
+                ..SEND_TEMPL
+            }, Ok(Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 5500),
+                window_len: 3500,
+                sack_ranges: [
+                    Some((REMOTE_SEQ.0 as u32 + 1 + 7000,
+                          REMOTE_SEQ.0 as u32 + 1 + 7500)),
+                    Some((REMOTE_SEQ.0 as u32 + 1 + 6000,
+                          REMOTE_SEQ.0 as u32 + 1 + 6500)),
+                    None],
+                ..RECV_TEMPL
+            })));
+
+        // 6th lost
+        // send!(s, TcpRepr {
+        //         seq_number: REMOTE_SEQ + 7500 + 1,
+        //         ack_number: Some(LOCAL_SEQ + 1),
+        //         payload: &segment,
+        //         ..SEND_TEMPL
+        //     });
+
+        // 7th transmits
+        send!(s, TcpRepr {
+                seq_number: REMOTE_SEQ + 8000 + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &segment,
+                ..SEND_TEMPL
+            }, Ok(Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 5500),
+                window_len: 3500,
+                sack_ranges: [
+                    Some((REMOTE_SEQ.0 as u32 + 1 + 8000,
+                          REMOTE_SEQ.0 as u32 + 1 + 8500)),
+                    Some((REMOTE_SEQ.0 as u32 + 1 + 7000,
+                          REMOTE_SEQ.0 as u32 + 1 + 7500)),
+                    Some((REMOTE_SEQ.0 as u32 + 1 + 6000,
+                          REMOTE_SEQ.0 as u32 + 1 + 6500))
+                ],
+                ..RECV_TEMPL
+            })));
+    }
+
+    #[test]
+    fn test_sack_tx_skip() {
+        let mut s = socket_established_with_buffer_sizes(4000, 4000);
+        s.remote_has_sack = true;
+        s.remote_mss = 5;
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            ..SEND_TEMPL
+        });
+
+        s.send_slice("123456789x12345678906789c6789d".as_bytes()).unwrap();
+
+        recv!(s, time 1000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 5 * 0,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "12345".as_bytes(),
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 1005, Ok(TcpRepr { // dropped
+            seq_number: LOCAL_SEQ + 1 + 5 * 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "6789x".as_bytes(),
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 1010, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 5 * 2,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "12345".as_bytes(),
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 1015, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 5 * 3,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "67890".as_bytes(),
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 1020, Ok(TcpRepr { // dropped
+            seq_number: LOCAL_SEQ + 1 + 5 * 4,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "6789c".as_bytes(),
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 1020, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 5 * 5,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "6789d".as_bytes(),
+            ..RECV_TEMPL
+        }));
+
+        // OG ACK
+        send!(s, time 1020, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 5 * 1),
+            sack_ranges: [
+                None,
+                None,
+                None
+            ],
+            ..SEND_TEMPL
+        });
+
+        // First duplicate ACK
+        send!(s, time 1020, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 5 * 1),
+            sack_ranges: [
+                None,
+                None,
+                None
+            ],
+            ..SEND_TEMPL
+        });
+
+        // Second duplicate ACK
+        send!(s, time 1025, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 5 * 1),
+            sack_ranges: [
+                Some((LOCAL_SEQ.0 as u32 + 1 + 5 * 2, LOCAL_SEQ.0 as u32 + 1 + 5 * 3)),
+                None,
+                None,
+            ],
+            ..SEND_TEMPL
+        });
+
+        // Third duplicate ACK, trigger fast retransmit
+        send!(s, time 1030, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 5 * 1),
+            sack_ranges: [
+                Some((LOCAL_SEQ.0 as u32 + 1 + 5 * 2, LOCAL_SEQ.0 as u32 + 1 + 5 * 4)),
+                Some((LOCAL_SEQ.0 as u32 + 1 + 5 * 5, LOCAL_SEQ.0 as u32 + 1 + 5 * 6)),
+                None,
+            ],
+            ..SEND_TEMPL
+        });
+
+        recv!(s, time 1100, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 5 * 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "6789x".as_bytes(),
+            ..RECV_TEMPL
+        }));
+
+        recv!(s, time 1100, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 5 * 4,
+            ack_number: Some(REMOTE_SEQ + 1),
+            window_len: 4000,
+            payload: "6789c".as_bytes(),
+            ..RECV_TEMPL
+        }));
     }
 
     #[test]
@@ -5378,4 +5767,76 @@ mod test {
         }
     }
 
+
+    #[test]
+    fn test_out_of_order_sequence() {
+        let mut s = socket_established();
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"A"[..],
+            ..SEND_TEMPL
+        });
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1 + (&b"AB"[..]).len(),
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"C"[..],
+            ..SEND_TEMPL
+        }, Ok(Some(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + (&b"A"[..]).len()),
+            window_len: 63,
+             ..RECV_TEMPL
+        })));
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1 + (&b"ABCD"[..]).len(),
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"E"[..],
+            ..SEND_TEMPL
+        }, Ok(Some(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + (&b"A"[..]).len()),
+            window_len: 63,
+             ..RECV_TEMPL
+        })));
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1 + (&b"A"[..]).len(),
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"B"[..],
+            ..SEND_TEMPL
+        }, Ok(Some(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + (&b"ABC"[..]).len()),
+            window_len: 61,
+             ..RECV_TEMPL
+        })));
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1 + (&b"ABC"[..]).len(),
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"D"[..],
+            ..SEND_TEMPL
+        }, Ok(Some(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + (&b"ABCDE"[..]).len()),
+            window_len: 59,
+             ..RECV_TEMPL
+        })));
+
+        send!(s, TcpRepr {
+            seq_number: REMOTE_SEQ + 1 + (&b"ABCDE"[..]).len(),
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"F"[..],
+            ..SEND_TEMPL
+        });
+
+        let mut buf = [0u8; 1024];
+        let len = s.recv_slice(&mut buf).unwrap();
+        let str_data = std::str::from_utf8(&buf[..len]).unwrap();
+        assert_eq!(str_data, "ABCDEF");
+    }
 }
