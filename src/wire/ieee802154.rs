@@ -2,7 +2,7 @@ use core::fmt;
 
 use byteorder::{ByteOrder, LittleEndian};
 
-// use {Error, Result};
+use crate::Error;
 use crate::Result;
 
 enum_with_unknown! {
@@ -170,7 +170,7 @@ macro_rules! set_fc_bit_field {
 }
 
 impl<T: AsRef<[u8]>> Frame<T> {
-    /// Imbue a raw octet buffer with Ethernet frame structure.
+    /// Input a raw octet buffer with Ethernet frame structure.
     pub fn new_unchecked(buffer: T) -> Frame<T> {
         Frame { buffer }
     }
@@ -188,7 +188,11 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error::Truncated)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
-        unimplemented!()
+        if self.buffer.as_ref().is_empty() {
+            Err(Error::Exhausted)
+        } else {
+            Ok(())
+        }
     }
 
     /// Consumes the frame, returning the underlying buffer.
@@ -414,6 +418,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     set_fc_bit_field!(set_ack_request, 5);
     set_fc_bit_field!(set_pan_id_compression, 6);
 
+    pub fn set_sequence_number(&mut self, value: u8) {
+        let data = self.buffer.as_mut();
+        data[field::SEQUENCE_NUMBER][0] = value;
+    }
+
     /// Set the destination PAN ID.
     pub fn set_dst_pan_id(&mut self, value: Pan) {
         self.set_dst_addressing_mode(AddressingMode::Extended);
@@ -582,6 +591,8 @@ impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
         if self.pan_id_compression {
             frame.set_pan_id_compression();
         }
+
+        frame.set_sequence_number(self.sequence_number);
 
         frame.set_dst_pan_id(self.dst_pan_id);
         frame.set_dst_addr(self.dst_addr);
