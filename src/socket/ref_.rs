@@ -8,6 +8,8 @@ use crate::socket::IcmpSocket;
 use crate::socket::UdpSocket;
 #[cfg(feature = "socket-tcp")]
 use crate::socket::TcpSocket;
+#[cfg(feature = "socket-dns")]
+use crate::socket::DnsSocket;
 
 /// A trait for tracking a socket usage session.
 ///
@@ -27,6 +29,8 @@ impl<'a> Session for IcmpSocket<'a> {}
 impl<'a> Session for UdpSocket<'a> {}
 #[cfg(feature = "socket-tcp")]
 impl<'a> Session for TcpSocket<'a> {}
+#[cfg(feature = "socket-dns")]
+impl<'a> Session for DnsSocket<'a> {}
 
 /// A smart pointer to a socket.
 ///

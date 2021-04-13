@@ -262,7 +262,7 @@ pub(crate) enum IpPacket<'a> {
     Icmpv6((Ipv6Repr, Icmpv6Repr<'a>)),
     #[cfg(feature = "socket-raw")]
     Raw((IpRepr, &'a [u8])),
-    #[cfg(feature = "socket-udp")]
+    #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
     Udp((IpRepr, UdpRepr<'a>)),
     #[cfg(feature = "socket-tcp")]
     Tcp((IpRepr, TcpRepr<'a>))
@@ -301,7 +301,7 @@ impl<'a> IpPacket<'a> {
             #[cfg(feature = "socket-raw")]
             IpPacket::Raw((_, raw_packet)) =>
                 payload.copy_from_slice(raw_packet),
-            #[cfg(feature = "socket-udp")]
+            #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             IpPacket::Udp((_, udp_repr)) =>
                 udp_repr.emit(&mut UdpPacket::new_unchecked(payload),
                               &_ip_repr.src_addr(), &_ip_repr.dst_addr(), &caps.checksum),
@@ -694,6 +694,10 @@ impl<'a, DeviceT> Interface<'a, DeviceT>
                         socket.dispatch(timestamp, ip_mtu, |response|
                             respond!(IpPacket::Tcp(response)))
                     }
+                    #[cfg(feature = "socket-dns")]
+                    Socket::Dns(ref mut socket) =>
+                        socket.dispatch(timestamp, |response|
+                            respond!(IpPacket::Udp(response))),
                 };
 
             match (device_result, socket_result) {
@@ -1007,7 +1011,7 @@ impl<'a> InterfaceInner<'a> {
             IpProtocol::Icmpv6 =>
                 self.process_icmpv6(sockets, timestamp, ipv6_repr.into(), ip_payload),
 
-            #[cfg(feature = "socket-udp")]
+            #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             IpProtocol::Udp =>
                 self.process_udp(sockets, ipv6_repr.into(), handled_by_raw_socket, ip_payload),
 
@@ -1430,7 +1434,7 @@ impl<'a> InterfaceInner<'a> {
         }
     }
 
-    #[cfg(feature = "socket-udp")]
+    #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
     fn process_udp<'frame>(&self, sockets: &mut SocketSet,
                            ip_repr: IpRepr, handled_by_raw_socket: bool, ip_payload: &'frame [u8]) ->
                           Result<Option<IpPacket<'frame>>>
@@ -1440,10 +1444,23 @@ impl<'a> InterfaceInner<'a> {
         let checksum_caps = self.device_capabilities.checksum.clone();
         let udp_repr = UdpRepr::parse(&udp_packet, &src_addr, &dst_addr, &checksum_caps)?;
 
+        #[cfg(feature = "socket-udp")]
         for mut udp_socket in sockets.iter_mut().filter_map(UdpSocket::downcast) {
             if !udp_socket.accepts(&ip_repr, &udp_repr) { continue }
 
             match udp_socket.process(&ip_repr, &udp_repr) {
+                // The packet is valid and handled by socket.
+                Ok(()) => return Ok(None),
+                // The packet is malformed, or the socket buffer is full.
+                Err(e) => return Err(e)
+            }
+        }
+
+        #[cfg(feature = "socket-dns")]
+        for mut dns_socket in sockets.iter_mut().filter_map(DnsSocket::downcast) {
+            if !dns_socket.accepts(&ip_repr, &udp_repr) { continue }
+
+            match dns_socket.process(&ip_repr, &udp_repr) {
                 // The packet is valid and handled by socket.
                 Ok(()) => return Ok(None),
                 // The packet is malformed, or the socket buffer is full.

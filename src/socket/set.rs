@@ -156,6 +156,9 @@ impl<'a> Set<'a> {
                         } else {
                             socket.close()
                         },
+                    #[cfg(feature = "socket-dns")]
+                    Socket::Dns(_) =>
+                        may_remove = true,
                 }
             }
             if may_remove {

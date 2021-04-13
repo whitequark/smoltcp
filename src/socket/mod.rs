@@ -24,6 +24,8 @@ mod udp;
 mod tcp;
 mod set;
 mod ref_;
+#[cfg(feature = "socket-dns")]
+mod dns;
 
 #[cfg(feature = "async")]
 mod waker;
@@ -52,6 +54,9 @@ pub use self::udp::{UdpPacketMetadata,
 pub use self::tcp::{SocketBuffer as TcpSocketBuffer,
                     State as TcpState,
                     TcpSocket};
+
+#[cfg(feature = "socket-dns")]
+pub use self::dns::{DnsQuery, DnsSocket};
 
 pub use self::set::{Set as SocketSet, Item as SocketSetItem, Handle as SocketHandle};
 pub use self::set::{Iter as SocketSetIter, IterMut as SocketSetIterMut};
@@ -91,6 +96,8 @@ pub enum Socket<'a> {
     Udp(UdpSocket<'a>),
     #[cfg(feature = "socket-tcp")]
     Tcp(TcpSocket<'a>),
+    #[cfg(feature = "socket-dns")]
+    Dns(DnsSocket<'a>),
 }
 
 macro_rules! dispatch_socket {
@@ -110,6 +117,8 @@ macro_rules! dispatch_socket {
             &$( $mut_ )* Socket::Udp(ref $( $mut_ )* $socket) => $code,
             #[cfg(feature = "socket-tcp")]
             &$( $mut_ )* Socket::Tcp(ref $( $mut_ )* $socket) => $code,
+            #[cfg(feature = "socket-dns")]
+            &$( $mut_ )* Socket::Dns(ref $( $mut_ )* $socket) => $code,
         }
     };
 }
@@ -169,3 +178,5 @@ from_socket!(IcmpSocket<'a>, Icmp);
 from_socket!(UdpSocket<'a>, Udp);
 #[cfg(feature = "socket-tcp")]
 from_socket!(TcpSocket<'a>, Tcp);
+#[cfg(feature = "socket-dns")]
+from_socket!(DnsSocket<'a>, Dns);

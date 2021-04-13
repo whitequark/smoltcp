@@ -112,6 +112,8 @@ mod udp;
 mod tcp;
 #[cfg(feature = "proto-dhcpv4")]
 pub(crate) mod dhcpv4;
+#[cfg(feature = "proto-dns")]
+pub(crate) mod dns;
 
 pub use self::pretty_print::PrettyPrinter;
 

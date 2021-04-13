@@ -41,11 +41,13 @@ verbose = []
 "proto-igmp" = ["proto-ipv4"]
 "proto-dhcpv4" = ["proto-ipv4", "socket-raw", "medium-ethernet"]
 "proto-ipv6" = []
+"proto-dns" = []
 "socket" = []
 "socket-raw" = ["socket"]
 "socket-udp" = ["socket"]
 "socket-tcp" = ["socket"]
 "socket-icmp" = ["socket"]
+"socket-dns" = ["socket", "proto-dns"]
 "async" = []
 
 defmt-trace = []
@@ -58,8 +60,8 @@ default = [
   "std", "log", # needed for `cargo test --no-default-features --features default` :/
   "medium-ethernet", "medium-ip",
   "phy-raw_socket", "phy-tuntap_interface",
-  "proto-ipv4", "proto-igmp", "proto-dhcpv4", "proto-ipv6",
-  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp",
+  "proto-ipv4", "proto-igmp", "proto-dhcpv4", "proto-ipv6", "proto-dns",
+  "socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dns",
   "async"
 ]
 
@@ -106,6 +108,10 @@ required-features = ["std", "medium-ethernet", "medium-ip", "phy-tuntap_interfac
 [[example]]
 name = "dhcp_client"
 required-features = ["std", "medium-ethernet", "medium-ip", "phy-tuntap_interface", "proto-ipv4", "proto-dhcpv4", "socket-raw"]
+
+[[example]]
+name = "dns"
+required-features = ["std", "phy-tap_interface", "proto-ipv4", "proto-dns", "socket-dns"]
 
 [profile.release]
 debug = 2
