@@ -81,6 +81,8 @@ pub mod pretty_print;
 mod ethernet;
 #[cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 mod arp;
+#[cfg(feature = "ieee802154")]
+mod ieee802154;
 pub(crate) mod ip;
 #[cfg(feature = "proto-ipv4")]
 mod ipv4;
@@ -127,6 +129,9 @@ pub use self::arp::{Hardware as ArpHardware,
                     Operation as ArpOperation,
                     Packet as ArpPacket,
                     Repr as ArpRepr};
+
+#[cfg(feature = "ieee802154")]
+pub use self::ieee802154::*;
 
 pub use self::ip::{Version as IpVersion,
                    Protocol as IpProtocol,
