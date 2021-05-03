@@ -6,13 +6,12 @@ use crate::Error;
 use crate::Result;
 
 enum_with_unknown! {
-    /// IEEE 802.15.4 protocol type.
+    /// IEEE 802.15.4 frame type.
     pub enum FrameType(u8) {
         Beacon = 0b000,
         Data = 0b001,
         Acknowledgement = 0b010,
         MacCommand = 0b011,
-        // Reserved = 0b100, // use the Unknown variant for this.
         Multipurpose = 0b101,
         FragmentOrFrak = 0b110,
         Extended = 0b111,
@@ -34,7 +33,7 @@ impl fmt::Display for FrameType {
     }
 }
 enum_with_unknown! {
-    /// IEEE 802.15.4 addressing mode for destination and sourcerce addresses.
+    /// IEEE 802.15.4 addressing mode for destination and source addresses.
     pub enum AddressingMode(u8) {
         Absent    = 0b00,
         Short     = 0b10,
@@ -43,7 +42,7 @@ enum_with_unknown! {
 }
 
 impl AddressingMode {
-    /// Return the size of the address.
+    /// Return the size in octets of the address.
     fn size(&self) -> usize {
         match self {
             AddressingMode::Absent => 0,
@@ -70,6 +69,7 @@ impl fmt::Display for AddressingMode {
 pub struct Pan(pub u16);
 
 impl Pan {
+    /// Return the PAN ID as bytes.
     pub fn as_bytes(&self) -> [u8; 2] {
         [(self.0 & 0xff) as u8, ((self.0 & 0xff00) >> 8) as u8] // XXX: check the order
     }
@@ -132,6 +132,15 @@ impl fmt::Display for Address {
     }
 }
 
+enum_with_unknown! {
+    /// IEEE 802.15.4 addressing mode for destination and source addresses.
+    pub enum FrameVersion(u8) {
+        Ieee802154_2003    = 0b00,
+        Ieee802154_2006    = 0b01,
+        Ieee802154  = 0b10,
+    }
+}
+
 /// A read/write wrapper around an IEEE 802.15.4 frame buffer.
 #[derive(Debug, Clone)]
 pub struct Frame<T: AsRef<[u8]>> {
@@ -148,6 +157,7 @@ mod field {
 
 macro_rules! fc_bit_field {
     ($field:ident, $bit:literal) => {
+        #[inline]
         pub fn $field(&self) -> bool {
             let data = self.buffer.as_ref();
             let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
@@ -159,6 +169,7 @@ macro_rules! fc_bit_field {
 
 macro_rules! set_fc_bit_field {
     ($field:ident, $bit:literal) => {
+        #[inline]
         pub fn $field(&mut self) {
             let data = &mut self.buffer.as_mut()[field::FRAMECONTROL];
             let mut raw = LittleEndian::read_u16(data);
@@ -189,7 +200,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Returns `Err(Error::Truncated)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         if self.buffer.as_ref().is_empty() {
-            Err(Error::Exhausted)
+            Err(Error::Truncated)
         } else {
             Ok(())
         }
@@ -204,9 +215,9 @@ impl<T: AsRef<[u8]>> Frame<T> {
     #[inline]
     pub fn frame_type(&self) -> FrameType {
         let data = self.buffer.as_ref();
-        let raw = &data[field::FRAMECONTROL];
-        let raw = (raw[0] & 0b111) as u8;
-        FrameType::from(raw)
+        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+        let ft = (raw & 0b11) as u8;
+        FrameType::from(ft)
     }
 
     fc_bit_field!(security_enabled, 3);
@@ -218,27 +229,27 @@ impl<T: AsRef<[u8]>> Frame<T> {
     #[inline]
     pub fn dst_addressing_mode(&self) -> AddressingMode {
         let data = self.buffer.as_ref();
-        let raw = &data[field::FRAMECONTROL];
-        let raw = (raw[1] >> 2 & 0b11) as u8;
-        AddressingMode::from(raw)
+        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+        let am = ((raw >> 10) & 0b11) as u8;
+        AddressingMode::from(am)
     }
 
-    /// Return the destination addressing mode.
+    /// Return the frame version.
     #[inline]
-    pub fn frame_version(&self) -> u8 {
+    pub fn frame_version(&self) -> FrameVersion {
         let data = self.buffer.as_ref();
-        let raw = &data[field::FRAMECONTROL];
-        let raw = (raw[1] >> 4 & 0b11) as u8;
-        raw
+        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+        let fv = ((raw >> 12) & 0b11) as u8;
+        FrameVersion::from(fv)
     }
 
     /// Return the source addressing mode.
     #[inline]
     pub fn src_addressing_mode(&self) -> AddressingMode {
         let data = self.buffer.as_ref();
-        let raw = &data[field::FRAMECONTROL];
-        let raw = (raw[1] >> 6 & 0b11) as u8;
-        AddressingMode::from(raw)
+        let raw = LittleEndian::read_u16(&data[field::FRAMECONTROL]);
+        let am = ((raw >> 14) & 0b11) as u8;
+        AddressingMode::from(am)
     }
 
     /// Return the sequence number of the frame.
@@ -272,6 +283,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 
     /// Return the destination PAN field.
+    #[inline]
     pub fn dst_pan_id(&self) -> Option<Pan> {
         match self.frame_type() {
             FrameType::Data => {
@@ -289,6 +301,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 
     /// Return the destination address field.
+    #[inline]
     pub fn dst_addr(&self) -> Address {
         match self.frame_type() {
             FrameType::Data => {
@@ -296,11 +309,13 @@ impl<T: AsRef<[u8]>> Frame<T> {
                 match self.dst_addressing_mode() {
                     AddressingMode::Absent => Address::Absent,
                     AddressingMode::Short => {
+                        // XXX not sure if the endianness is correctly handled
                         let mut raw = [0u8; 2];
                         raw.clone_from_slice(&data[2..4]);
                         Address::short_from_bytes(raw)
                     }
                     AddressingMode::Extended => {
+                        // XXX not sure if the endianness is correctly handled
                         let mut raw = [0u8; 8];
                         raw.clone_from_slice(&data[2..10]);
                         Address::extended_from_bytes(raw)
@@ -313,6 +328,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 
     /// Return the destination PAN field.
+    #[inline]
     pub fn src_pan_id(&self) -> Option<Pan> {
         match self.frame_type() {
             FrameType::Data => {
@@ -320,14 +336,14 @@ impl<T: AsRef<[u8]>> Frame<T> {
                     return None;
                 }
 
-                let data = self.addressing_fields().unwrap();
+                let addressing_fields = self.addressing_fields().unwrap();
                 let offset = self.dst_addressing_mode().size() + 2;
 
                 match self.src_addressing_mode() {
                     AddressingMode::Absent => None,
-                    AddressingMode::Short | AddressingMode::Extended => {
-                        Some(Pan(LittleEndian::read_u16(&data[offset..offset + 2])))
-                    }
+                    AddressingMode::Short | AddressingMode::Extended => Some(Pan(
+                        LittleEndian::read_u16(&addressing_fields[offset..offset + 2]),
+                    )),
                     _ => unreachable!(),
                 }
             }
@@ -336,6 +352,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 
     /// Return the source address field.
+    #[inline]
     pub fn src_addr(&self) -> Address {
         match self.frame_type() {
             FrameType::Data => {
@@ -354,11 +371,13 @@ impl<T: AsRef<[u8]>> Frame<T> {
                 match self.src_addressing_mode() {
                     AddressingMode::Absent => Address::Absent,
                     AddressingMode::Short => {
+                        // XXX not sure if the endianness is correctly handled
                         let mut raw = [0u8; 2];
                         raw.clone_from_slice(&data[offset..offset + 2]);
                         Address::short_from_bytes(raw)
                     }
                     AddressingMode::Extended => {
+                        // XXX not sure if the endianness is correctly handled
                         let mut raw = [0u8; 8];
                         raw.clone_from_slice(&data[offset..offset + 8]);
                         Address::extended_from_bytes(raw)
@@ -405,6 +424,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     /// Set the frame type.
+    #[inline]
     pub fn set_frame_type(&mut self, frame_type: FrameType) {
         let data = &mut self.buffer.as_mut()[field::FRAMECONTROL];
         let mut raw = LittleEndian::read_u16(data);
@@ -418,19 +438,36 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     set_fc_bit_field!(set_ack_request, 5);
     set_fc_bit_field!(set_pan_id_compression, 6);
 
+    /// Set the frame version.
+    #[inline]
+    pub fn set_frame_version(&mut self, version: FrameVersion) {
+        let data = &mut self.buffer.as_mut()[field::FRAMECONTROL];
+        let mut raw = LittleEndian::read_u16(data);
+
+        raw = (raw & !(0b11 << 12)) | ((u8::from(version) as u16 & 0b11) << 12);
+        data.copy_from_slice(&raw.to_le_bytes());
+    }
+
+    /// Set the frame sequence number.
+    #[inline]
     pub fn set_sequence_number(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::SEQUENCE_NUMBER][0] = value;
     }
 
     /// Set the destination PAN ID.
+    #[inline]
     pub fn set_dst_pan_id(&mut self, value: Pan) {
+        // NOTE the destination addressing mode must be different than Absent.
+        // This is the reason why we set it to Extended.
         self.set_dst_addressing_mode(AddressingMode::Extended);
+
         let data = self.buffer.as_mut();
         data[field::ADDRESSING][..2].copy_from_slice(&value.as_bytes());
     }
 
     /// Set the destination address.
+    #[inline]
     pub fn set_dst_addr(&mut self, value: Address) {
         match value {
             Address::Absent => self.set_dst_addressing_mode(AddressingMode::Absent),
@@ -451,11 +488,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[inline]
     fn set_dst_addressing_mode(&mut self, value: AddressingMode) {
         let data = &mut self.buffer.as_mut()[field::FRAMECONTROL];
+        let mut raw = LittleEndian::read_u16(data);
 
-        data[1] = (data[1] & !(0b11 << 2)) | ((u8::from(value) & 0b11) << 2);
+        raw = (raw & !(0b11 << 10)) | ((u8::from(value) as u16 & 0b11) << 10);
+        data.copy_from_slice(&raw.to_le_bytes());
     }
 
     /// Set the source PAN ID.
+    #[inline]
     pub fn set_src_pan_id(&mut self, value: Pan) {
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => todo!("{}", self.dst_addressing_mode()),
@@ -469,6 +509,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     }
 
     /// Set the source address.
+    #[inline]
     pub fn set_src_addr(&mut self, value: Address) {
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => todo!("{}", self.dst_addressing_mode()),
@@ -497,10 +538,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     /// Set the source addressing mode.
     #[inline]
     fn set_src_addressing_mode(&mut self, value: AddressingMode) {
-        let data = self.buffer.as_mut();
-        data[1] = data[1] | (u8::from(value) & 0b11) << 6 as u8;
-        data[field::FRAMECONTROL][1] =
-            data[field::FRAMECONTROL][1] | (u8::from(value) & 0b11) << 6 as u8;
+        let data = &mut self.buffer.as_mut()[field::FRAMECONTROL];
+        let mut raw = LittleEndian::read_u16(data);
+
+        raw = (raw & !(0b11 << 14)) | ((u8::from(value) as u16 & 0b11) << 14);
+        data.copy_from_slice(&raw.to_le_bytes());
     }
 
     /// Return a mutable pointer to the payload.
@@ -508,10 +550,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     pub fn payload_mut(&mut self) -> Option<&mut [u8]> {
         match self.frame_type() {
             FrameType::Data => {
-                let addr_len = self.addressing_fields().unwrap().len();
+                let mut start_offset = 3;
+                start_offset += self.addressing_fields().unwrap().len();
+
                 let data = self.buffer.as_mut();
-                let buffer_len = data.len();
-                Some(&mut data[3 + addr_len..buffer_len - 2])
+                let end_offset = start_offset + data.len() - 2;
+                Some(&mut data[start_offset..end_offset])
             }
             _ => None,
         }
@@ -543,7 +587,7 @@ pub struct Repr<'a, T: AsRef<[u8]>> {
     pub ack_request: bool,
     pub sequence_number: u8,
     pub pan_id_compression: bool,
-    // pub frame_version_field: u16,
+    pub frame_version: FrameVersion,
     pub dst_pan_id: Pan,
     pub dst_addr: Address,
     pub src_pan_id: Option<Pan>,
@@ -552,7 +596,7 @@ pub struct Repr<'a, T: AsRef<[u8]>> {
 }
 
 impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
-    /// Return the lenght of a buffer required to hold a packet with the payload of a given length.
+    /// Return the length of a buffer required to hold a packet with the payload of a given length.
     #[inline]
     pub fn buffer_len(&self) -> usize {
         3 + 2
@@ -592,6 +636,8 @@ impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
             frame.set_pan_id_compression();
         }
 
+        frame.set_frame_version(self.frame_version);
+
         frame.set_sequence_number(self.sequence_number);
 
         frame.set_dst_pan_id(self.dst_pan_id);
@@ -611,8 +657,6 @@ impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
 
 #[cfg(test)]
 mod test {
-    // Tests that are valid with any combination of
-    // "proto-*" features.
     use super::*;
     use crate::Result;
 
@@ -632,6 +676,7 @@ mod test {
             frame_pending: false,
             ack_request: true,
             pan_id_compression: true,
+            frame_version: FrameVersion::Ieee802154,
             sequence_number: 0,
             dst_pan_id: Pan(0xabcd),
             dst_addr: Address::BROADCAST,
@@ -652,6 +697,7 @@ mod test {
         assert_eq!(frame.frame_pending(), false);
         assert_eq!(frame.ack_request(), true);
         assert_eq!(frame.pan_id_compression(), true);
+        assert_eq!(frame.frame_version(), FrameVersion::Ieee802154);
         assert_eq!(frame.sequence_number(), 0);
         assert_eq!(frame.dst_pan_id(), Some(Pan(0xabcd)));
         assert_eq!(frame.dst_addr(), Address::BROADCAST);
@@ -667,8 +713,7 @@ mod test {
             #[test]
             fn $name() -> Result<()> {
                 let frame = &$bytes;
-                // let _frame = Frame::new_checked(frame)?;
-                let frame = Frame::new_unchecked(frame);
+                let frame = Frame::new_checked(frame)?;
 
                 $(
                     let v = frame.$test_method();
@@ -709,10 +754,13 @@ mod test {
         frame_pending -> false,
         ack_request -> false,
         pan_id_compression -> false,
-        dst_addr -> Address::Short([0x78, 0x56]),
-        src_addr -> Address::Short([0xbc, 0x9a]),
+        dst_addressing_mode -> AddressingMode::Short,
+        frame_version -> FrameVersion::Ieee802154_2006,
+        src_addressing_mode -> AddressingMode::Short,
         dst_pan_id -> Some(Pan(0x1234)),
+        dst_addr -> Address::Short([0x78, 0x56]),
         src_pan_id -> Some(Pan(0x1234)),
+        src_addr -> Address::Short([0xbc, 0x9a]),
     }
 
     vector_test! {
@@ -732,7 +780,7 @@ mod test {
         ack_request -> false,
         pan_id_compression -> true,
         dst_addressing_mode -> AddressingMode::Short,
-        frame_version -> 0b01,
+        frame_version -> FrameVersion::Ieee802154_2006,
         src_addressing_mode -> AddressingMode::Extended,
         //payload -> Some(&[0x2b, 0x00, 0x00, 0x00]),
         fcs -> [0xb3, 0x0d],
