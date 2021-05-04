@@ -137,9 +137,9 @@ impl fmt::Display for Address {
 enum_with_unknown! {
     /// IEEE 802.15.4 addressing mode for destination and source addresses.
     pub enum FrameVersion(u8) {
-        Ieee802154_2003    = 0b00,
-        Ieee802154_2006    = 0b01,
-        Ieee802154  = 0b10,
+        Ieee802154_2003 = 0b00,
+        Ieee802154_2006 = 0b01,
+        Ieee802154 = 0b10,
     }
 }
 
@@ -153,7 +153,7 @@ mod field {
     use crate::wire::field::*;
 
     pub const FRAMECONTROL: Field = 0..2;
-    pub const SEQUENCE_NUMBER: Field = 2..3;
+    pub const SEQUENCE_NUMBER: usize = 2;
     pub const ADDRESSING: Rest = 3..;
 }
 
@@ -227,6 +227,9 @@ impl<T: AsRef<[u8]>> Frame<T> {
     fc_bit_field!(ack_request, 5);
     fc_bit_field!(pan_id_compression, 6);
 
+    fc_bit_field!(sequence_number_suppression, 8);
+    fc_bit_field!(ie_present, 9);
+
     /// Return the destination addressing mode.
     #[inline]
     pub fn dst_addressing_mode(&self) -> AddressingMode {
@@ -256,149 +259,180 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
     /// Return the sequence number of the frame.
     #[inline]
-    pub fn sequence_number(&self) -> u8 {
-        let data = self.buffer.as_ref();
-        let raw = data[field::SEQUENCE_NUMBER][0];
-        raw
+    pub fn sequence_number(&self) -> Option<u8> {
+        match self.frame_type() {
+            FrameType::Beacon
+            | FrameType::Data
+            | FrameType::Acknowledgement
+            | FrameType::MacCommand
+            | FrameType::Multipurpose => {
+                let data = self.buffer.as_ref();
+                let raw = data[field::SEQUENCE_NUMBER];
+                Some(raw)
+            }
+            FrameType::Extended | FrameType::FragmentOrFrak | FrameType::Unknown(_) => None,
+        }
     }
 
     /// Return the addressing fields.
     #[inline]
     fn addressing_fields(&self) -> Option<&[u8]> {
         match self.frame_type() {
-            FrameType::Data => {
-                let mut offset = 2;
-
-                // Calculate the size of the addressing field.
-                offset += self.dst_addressing_mode().size();
-                offset += self.src_addressing_mode().size();
-
-                // XXX: We assume DST_ADDR and SRC_ADDR are present when there is PAN ID compression
-                if !self.pan_id_compression() {
-                    offset += 2;
-                }
-
-                Some(&self.buffer.as_ref()[field::ADDRESSING][..offset])
-            }
-            _ => None,
+            FrameType::Beacon
+            | FrameType::Data
+            | FrameType::MacCommand
+            | FrameType::Multipurpose => (),
+            FrameType::Acknowledgement if self.frame_version() == FrameVersion::Ieee802154 => (),
+            FrameType::Acknowledgement
+            | FrameType::Extended
+            | FrameType::FragmentOrFrak
+            | FrameType::Unknown(_) => return None,
         }
+
+        let mut offset = 2;
+
+        // Calculate the size of the addressing field.
+        offset += self.dst_addressing_mode().size();
+        offset += self.src_addressing_mode().size();
+
+        if !self.pan_id_compression() {
+            offset += 2;
+        }
+
+        Some(&self.buffer.as_ref()[field::ADDRESSING][..offset])
     }
 
     /// Return the destination PAN field.
     #[inline]
     pub fn dst_pan_id(&self) -> Option<Pan> {
-        match self.frame_type() {
-            FrameType::Data => {
-                let data = self.addressing_fields().unwrap();
-                match self.dst_addressing_mode() {
-                    AddressingMode::Absent => None,
-                    AddressingMode::Short | AddressingMode::Extended => {
-                        Some(Pan(LittleEndian::read_u16(&data[0..2])))
-                    }
-                    _ => unreachable!(),
-                }
+        let addressing_fields = self.addressing_fields()?;
+        match self.dst_addressing_mode() {
+            AddressingMode::Absent => None,
+            AddressingMode::Short | AddressingMode::Extended => {
+                Some(Pan(LittleEndian::read_u16(&addressing_fields[0..2])))
             }
-            _ => None,
+            AddressingMode::Unknown(_) => None,
         }
     }
 
     /// Return the destination address field.
     #[inline]
-    pub fn dst_addr(&self) -> Address {
-        match self.frame_type() {
-            FrameType::Data => {
-                let data = self.addressing_fields().unwrap();
-                match self.dst_addressing_mode() {
-                    AddressingMode::Absent => Address::Absent,
-                    AddressingMode::Short => {
-                        // XXX not sure if the endianness is correctly handled
-                        let mut raw = [0u8; 2];
-                        raw.clone_from_slice(&data[2..4]);
-                        Address::short_from_bytes(raw)
-                    }
-                    AddressingMode::Extended => {
-                        // XXX not sure if the endianness is correctly handled
-                        let mut raw = [0u8; 8];
-                        raw.clone_from_slice(&data[2..10]);
-                        Address::extended_from_bytes(raw)
-                    }
-                    _ => unreachable!(),
-                }
+    pub fn dst_addr(&self) -> Option<Address> {
+        let addressing_fields = self.addressing_fields()?;
+        match self.dst_addressing_mode() {
+            AddressingMode::Absent => Some(Address::Absent),
+            AddressingMode::Short => {
+                // XXX not sure if the endianness is correctly handled
+                let mut raw = [0u8; 2];
+                raw.clone_from_slice(&addressing_fields[2..4]);
+                Some(Address::short_from_bytes(raw))
             }
-            _ => Address::Absent,
+            AddressingMode::Extended => {
+                // XXX not sure if the endianness is correctly handled
+                let mut raw = [0u8; 8];
+                raw.clone_from_slice(&addressing_fields[2..10]);
+                Some(Address::extended_from_bytes(raw))
+            }
+            AddressingMode::Unknown(_) => None,
         }
     }
 
     /// Return the destination PAN field.
     #[inline]
     pub fn src_pan_id(&self) -> Option<Pan> {
-        match self.frame_type() {
-            FrameType::Data => {
-                if self.pan_id_compression() {
-                    return None;
-                }
+        if self.pan_id_compression() {
+            return None;
+        }
 
-                let addressing_fields = self.addressing_fields().unwrap();
-                let offset = self.dst_addressing_mode().size() + 2;
+        let addressing_fields = self.addressing_fields()?;
+        let offset = self.dst_addressing_mode().size() + 2;
 
-                match self.src_addressing_mode() {
-                    AddressingMode::Absent => None,
-                    AddressingMode::Short | AddressingMode::Extended => Some(Pan(
-                        LittleEndian::read_u16(&addressing_fields[offset..offset + 2]),
-                    )),
-                    _ => unreachable!(),
-                }
-            }
-            _ => None,
+        match self.src_addressing_mode() {
+            AddressingMode::Absent => None,
+            AddressingMode::Short | AddressingMode::Extended => Some(Pan(LittleEndian::read_u16(
+                &addressing_fields[offset..offset + 2],
+            ))),
+            AddressingMode::Unknown(_) => None,
         }
     }
 
     /// Return the source address field.
     #[inline]
-    pub fn src_addr(&self) -> Address {
-        match self.frame_type() {
-            FrameType::Data => {
-                let data = self.addressing_fields().unwrap();
-                let mut offset = match self.dst_addressing_mode() {
-                    AddressingMode::Absent => 0,
-                    AddressingMode::Short => 2,
-                    AddressingMode::Extended => 8,
-                    _ => unreachable!(),
-                } + 2;
+    pub fn src_addr(&self) -> Option<Address> {
+        let addressing_fields = self.addressing_fields()?;
+        let mut offset = match self.dst_addressing_mode() {
+            AddressingMode::Absent => 0,
+            AddressingMode::Short => 2,
+            AddressingMode::Extended => 8,
+            _ => unreachable!(),
+        } + 2;
 
-                if !self.pan_id_compression() {
-                    offset += 2;
-                }
+        if !self.pan_id_compression() {
+            offset += 2;
+        }
 
-                match self.src_addressing_mode() {
-                    AddressingMode::Absent => Address::Absent,
-                    AddressingMode::Short => {
-                        // XXX not sure if the endianness is correctly handled
-                        let mut raw = [0u8; 2];
-                        raw.clone_from_slice(&data[offset..offset + 2]);
-                        Address::short_from_bytes(raw)
-                    }
-                    AddressingMode::Extended => {
-                        // XXX not sure if the endianness is correctly handled
-                        let mut raw = [0u8; 8];
-                        raw.clone_from_slice(&data[offset..offset + 8]);
-                        Address::extended_from_bytes(raw)
-                    }
-                    _ => unreachable!(),
-                }
+        match self.src_addressing_mode() {
+            AddressingMode::Absent => Some(Address::Absent),
+            AddressingMode::Short => {
+                // XXX not sure if the endianness is correctly handled
+                let mut raw = [0u8; 2];
+                raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
+                Some(Address::short_from_bytes(raw))
             }
-            _ => Address::Absent,
+            AddressingMode::Extended => {
+                // XXX not sure if the endianness is correctly handled
+                let mut raw = [0u8; 8];
+                raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
+                Some(Address::extended_from_bytes(raw))
+            }
+            AddressingMode::Unknown(_) => None,
         }
     }
 
     /// Return the Auxilliary Security Header Field
     #[inline]
     pub fn aux_security_header(&self) -> Option<&[u8]> {
-        if self.security_enabled() {
-            todo!();
-        } else {
-            None
+        match self.frame_type() {
+            FrameType::Beacon
+            | FrameType::Data
+            | FrameType::MacCommand
+            | FrameType::Multipurpose => (),
+            FrameType::Acknowledgement if self.frame_version() == FrameVersion::Ieee802154 => (),
+            FrameType::Acknowledgement
+            | FrameType::Extended
+            | FrameType::FragmentOrFrak
+            | FrameType::Unknown(_) => return None,
         }
+
+        if !self.security_enabled() {
+            return None;
+        }
+
+        todo!();
+    }
+
+    /// Return the IE field (the header as well as the payload IE)
+    #[inline]
+    pub fn ie_field(&self) -> Option<&[u8]> {
+        match self.frame_type() {
+            FrameType::Data | FrameType::MacCommand | FrameType::Multipurpose => (),
+            FrameType::Beacon | FrameType::Acknowledgement
+                if self.frame_version() == FrameVersion::Ieee802154 =>
+            {
+                ()
+            }
+            FrameType::Beacon
+            | FrameType::Acknowledgement
+            | FrameType::Extended
+            | FrameType::FragmentOrFrak
+            | FrameType::Unknown(_) => return None,
+        }
+
+        if !self.ie_present() {
+            return None;
+        }
+
+        todo!();
     }
 
     /// Return the FCS fields
@@ -454,7 +488,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[inline]
     pub fn set_sequence_number(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::SEQUENCE_NUMBER][0] = value;
+        data[field::SEQUENCE_NUMBER] = value;
     }
 
     /// Set the destination PAN ID.
@@ -568,7 +602,7 @@ impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "IEEE802.15.4 frame type={} seq={:2x} dst_pan={:x?} dest={} src_pan={:?} src={} fcs={:x?}",
+            "IEEE802.15.4 frame type={} seq={:2x?} dst_pan={:x?} dest={:x?} src_pan={:?} src={:x?} fcs={:x?}",
             self.frame_type(),
             self.sequence_number(),
             self.dst_pan_id(),
@@ -679,7 +713,7 @@ mod test {
             ack_request: true,
             pan_id_compression: true,
             frame_version: FrameVersion::Ieee802154,
-            sequence_number: 0,
+            sequence_number: 1,
             dst_pan_id: Pan(0xabcd),
             dst_addr: Address::BROADCAST,
             src_pan_id: None,
@@ -700,13 +734,13 @@ mod test {
         assert_eq!(frame.ack_request(), true);
         assert_eq!(frame.pan_id_compression(), true);
         assert_eq!(frame.frame_version(), FrameVersion::Ieee802154);
-        assert_eq!(frame.sequence_number(), 0);
+        assert_eq!(frame.sequence_number(), Some(1));
         assert_eq!(frame.dst_pan_id(), Some(Pan(0xabcd)));
-        assert_eq!(frame.dst_addr(), Address::BROADCAST);
+        assert_eq!(frame.dst_addr(), Some(Address::BROADCAST));
         assert_eq!(frame.src_pan_id(), None);
         assert_eq!(
             frame.src_addr(),
-            Address::Extended([0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00])
+            Some(Address::Extended([0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00]))
         );
     }
 
@@ -738,8 +772,8 @@ mod test {
             0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, // src addr
         ];
         frame_type -> FrameType::Data,
-        dst_addr -> Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01]),
-        src_addr -> Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02]),
+        dst_addr -> Some(Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01])),
+        src_addr -> Some(Address::Extended([0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02])),
         dst_pan_id -> Some(Pan(0xabcd)),
     }
 
@@ -760,9 +794,9 @@ mod test {
         frame_version -> FrameVersion::Ieee802154_2006,
         src_addressing_mode -> AddressingMode::Short,
         dst_pan_id -> Some(Pan(0x1234)),
-        dst_addr -> Address::Short([0x78, 0x56]),
+        dst_addr -> Some(Address::Short([0x78, 0x56])),
         src_pan_id -> Some(Pan(0x1234)),
-        src_addr -> Address::Short([0xbc, 0x9a]),
+        src_addr -> Some(Address::Short([0xbc, 0x9a])),
     }
 
     vector_test! {
