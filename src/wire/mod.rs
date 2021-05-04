@@ -135,7 +135,8 @@ pub use self::ieee802154::{Address as Ieee802154Address,
                            Pan as Ieee802154Pan,
                            Frame as Ieee802154Frame,
                            FrameType as Ieee802154FrameType,
-                           AddressingMode as Ieee802154AddressingMode,};
+                           AddressingMode as Ieee802154AddressingMode,
+                           Repr as Ieee802154Repr};
 
 pub use self::ip::{Version as IpVersion,
                    Protocol as IpProtocol,
