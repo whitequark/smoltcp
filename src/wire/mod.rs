@@ -135,6 +135,7 @@ pub use self::ieee802154::{Address as Ieee802154Address,
                            Pan as Ieee802154Pan,
                            Frame as Ieee802154Frame,
                            FrameType as Ieee802154FrameType,
+                           FrameVersion as Ieee802154FrameVersion,
                            AddressingMode as Ieee802154AddressingMode,
                            Repr as Ieee802154Repr};
 
