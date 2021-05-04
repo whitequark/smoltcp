@@ -133,19 +133,13 @@ impl Address {
 
     /// Convert an extended address to a link-local IPv6 address using the EUI-64 format from
     /// RFC2464.
-    pub fn into_link_local_address(self) -> Option<Ipv6Address> {
-        match self {
-            Address::Absent | Address::Short(_) => None,
-            Address::Extended(value) => {
-                let mut bytes = [0; 16];
-                bytes[0] = 0xfe;
-                bytes[1] = 0x80;
-                // NOTE we can unwrap since we do the same check in `as_eui_64`.
-                bytes[8..].copy_from_slice(&self.as_eui_64().unwrap());
+    pub fn as_link_local_address(&self) -> Option<Ipv6Address> {
+        let mut bytes = [0; 16];
+        bytes[0] = 0xfe;
+        bytes[1] = 0x80;
+        bytes[8..].copy_from_slice(&self.as_eui_64()?);
 
-                Some(Ipv6Address::from_bytes(&bytes))
-            }
-        }
+        Some(Ipv6Address::from_bytes(&bytes))
     }
 }
 
