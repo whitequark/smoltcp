@@ -71,7 +71,9 @@ pub struct Pan(pub u16);
 impl Pan {
     /// Return the PAN ID as bytes.
     pub fn as_bytes(&self) -> [u8; 2] {
-        [(self.0 & 0xff) as u8, ((self.0 & 0xff00) >> 8) as u8] // XXX: check the order
+        let mut pan = [0u8; 2];
+        LittleEndian::write_u16(&mut pan, self.0);
+        pan
     }
 }
 
