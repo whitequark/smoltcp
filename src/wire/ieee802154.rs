@@ -2,6 +2,7 @@ use core::fmt;
 
 use byteorder::{ByteOrder, LittleEndian};
 
+use crate::wire::ipv6::Address as Ipv6Address;
 use crate::Error;
 use crate::Result;
 
@@ -112,6 +113,38 @@ impl Address {
             Address::Absent => &[],
             Address::Short(value) => value,
             Address::Extended(value) => value,
+        }
+    }
+
+    /// Convert the extended address to an Extended Unique Identifier (EUI-64)
+    pub fn as_eui_64(&self) -> Option<[u8; 8]> {
+        match self {
+            Address::Absent | Address::Short(_) => None,
+            Address::Extended(value) => {
+                let mut bytes = [0; 8];
+                bytes.copy_from_slice(&value[..]);
+
+                bytes[0] ^= 1 << 1;
+
+                Some(bytes)
+            }
+        }
+    }
+
+    /// Convert an extended address to a link-local IPv6 address using the EUI-64 format from
+    /// RFC2464.
+    pub fn into_link_local_address(self) -> Option<Ipv6Address> {
+        match self {
+            Address::Absent | Address::Short(_) => None,
+            Address::Extended(value) => {
+                let mut bytes = [0; 16];
+                bytes[0] = 0xfe;
+                bytes[1] = 0x80;
+                // NOTE we can unwrap since we do the same check in `as_eui_64`.
+                bytes[8..].copy_from_slice(&self.as_eui_64().unwrap());
+
+                Some(Ipv6Address::from_bytes(&bytes))
+            }
         }
     }
 }
@@ -740,7 +773,9 @@ mod test {
         assert_eq!(frame.src_pan_id(), None);
         assert_eq!(
             frame.src_addr(),
-            Some(Address::Extended([0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00]))
+            Some(Address::Extended([
+                0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00
+            ]))
         );
     }
 
