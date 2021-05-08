@@ -643,45 +643,64 @@ impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
 
 /// A high-level representation of an IEEE802.15.4 frame.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Repr<'a, T: AsRef<[u8]>> {
+pub struct Repr<'a> {
     pub frame_type: FrameType,
     pub security_enabled: bool,
     pub frame_pending: bool,
     pub ack_request: bool,
-    pub sequence_number: u8,
+    pub sequence_number: Option<u8>,
     pub pan_id_compression: bool,
     pub frame_version: FrameVersion,
-    pub dst_pan_id: Pan,
-    pub dst_addr: Address,
+    pub dst_pan_id: Option<Pan>,
+    pub dst_addr: Option<Address>,
     pub src_pan_id: Option<Pan>,
-    pub src_addr: Address,
-    pub payload: &'a T,
+    pub src_addr: Option<Address>,
+    pub payload: Option<&'a [u8]>,
 }
 
-impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
+impl<'a> Repr<'a> {
+    /// Parse an IEEE 802.15.4 frame and return a high-level representation.
+    pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Frame<&'a T>) -> Result<Repr<'a>> {
+        // Ensure the basic accessors will work.
+        packet.check_len()?;
+
+        Ok(Repr {
+            frame_type: packet.frame_type(),
+            security_enabled: packet.security_enabled(),
+            frame_pending: packet.frame_pending(),
+            ack_request: packet.ack_request(),
+            sequence_number: packet.sequence_number(),
+            pan_id_compression: packet.pan_id_compression(),
+            frame_version: packet.frame_version(),
+            dst_pan_id: packet.dst_pan_id(),
+            dst_addr: packet.dst_addr(),
+            src_pan_id: packet.src_pan_id(),
+            src_addr: packet.src_addr(),
+            payload: packet.payload(),
+        })
+    }
+
     /// Return the length of a buffer required to hold a packet with the payload of a given length.
     #[inline]
     pub fn buffer_len(&self) -> usize {
         3 + 2
             + match self.dst_addr {
-                Address::Absent => 0,
-                Address::Short(_) => 2,
-                Address::Extended(_) => 8,
+                Some(Address::Absent) | None => 0,
+                Some(Address::Short(_)) => 2,
+                Some(Address::Extended(_)) => 8,
             }
             + if !self.pan_id_compression { 2 } else { 0 }
             + match self.src_addr {
-                Address::Absent => 0,
-                Address::Short(_) => 2,
-                Address::Extended(_) => 8,
+                Some(Address::Absent) | None => 0,
+                Some(Address::Short(_)) => 2,
+                Some(Address::Extended(_)) => 8,
             }
-            + self.payload.as_ref().len()
+            + self.payload.as_ref().unwrap().len() // XXX
             + 2
     }
-}
 
-impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
     /// Emit a high-level representation into an IEEE802.15.4 frame.
-    pub fn emit<B: AsRef<[u8]> + AsMut<[u8]>>(&self, frame: &mut Frame<B>) {
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, frame: &mut Frame<T>) {
         frame.set_frame_type(self.frame_type);
         if self.security_enabled {
             frame.set_security_enabled();
@@ -701,20 +720,30 @@ impl<'a, T: AsRef<[u8]>> Repr<'a, T> {
 
         frame.set_frame_version(self.frame_version);
 
-        frame.set_sequence_number(self.sequence_number);
+        if let Some(sequence_number) = self.sequence_number {
+            frame.set_sequence_number(sequence_number);
+        }
 
-        frame.set_dst_pan_id(self.dst_pan_id);
-        frame.set_dst_addr(self.dst_addr);
+        if let Some(dst_pan_id) = self.dst_pan_id {
+            frame.set_dst_pan_id(dst_pan_id);
+        }
+        if let Some(dst_addr) = self.dst_addr {
+            frame.set_dst_addr(dst_addr);
+        }
 
         if !self.pan_id_compression && self.src_pan_id.is_some() {
             frame.set_src_pan_id(self.src_pan_id.unwrap());
         }
-        frame.set_src_addr(self.src_addr);
+
+        if let Some(src_addr) = self.src_addr {
+            frame.set_src_addr(src_addr);
+        }
 
         let offset = 3 + frame.addressing_fields().unwrap().len();
-        let payload_len = self.payload.as_ref().len();
+        let payload_len = self.payload.as_ref().unwrap().len(); // XXX
 
-        frame.buffer.as_mut()[offset..offset + payload_len].copy_from_slice(self.payload.as_ref());
+        frame.buffer.as_mut()[offset..offset + payload_len]
+            .copy_from_slice(self.payload.as_ref().unwrap()); // XXX
     }
 }
 
@@ -733,6 +762,7 @@ mod test {
     fn prepare_frame() {
         let mut buffer = [0u8; 128];
 
+        let payload = 1234u32.to_le_bytes();
         let repr = Repr {
             frame_type: FrameType::Data,
             security_enabled: false,
@@ -740,12 +770,14 @@ mod test {
             ack_request: true,
             pan_id_compression: true,
             frame_version: FrameVersion::Ieee802154,
-            sequence_number: 1,
-            dst_pan_id: Pan(0xabcd),
-            dst_addr: Address::BROADCAST,
+            sequence_number: Some(1),
+            dst_pan_id: Some(Pan(0xabcd)),
+            dst_addr: Some(Address::BROADCAST),
             src_pan_id: None,
-            src_addr: Address::Extended([0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00]),
-            payload: &1234u32.to_le_bytes(),
+            src_addr: Some(Address::Extended([
+                0xc7, 0xd9, 0xb5, 0x14, 0x00, 0x4b, 0x12, 0x00,
+            ])),
+            payload: Some(&payload),
         };
 
         let buffer_len = repr.buffer_len();
