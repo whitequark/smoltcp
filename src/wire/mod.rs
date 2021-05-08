@@ -83,6 +83,8 @@ mod ethernet;
 mod arp;
 #[cfg(feature = "ieee802154")]
 mod ieee802154;
+#[cfg(feature = "6lowpan")]
+mod sixlowpan;
 pub(crate) mod ip;
 #[cfg(feature = "proto-ipv4")]
 mod ipv4;
