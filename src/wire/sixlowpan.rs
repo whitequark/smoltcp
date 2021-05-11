@@ -109,7 +109,7 @@ mod iphc {
                 let mut raw = NetworkEndian::read_u16(data);
 
                 raw = (raw & !($mask << $shift)) | ((val as u16) << $shift);
-                data.copy_from_slice(&raw.to_le_bytes());
+                NetworkEndian::write_u16(data, raw);
             }
         };
     }
@@ -537,7 +537,7 @@ mod iphc {
             let mut raw = NetworkEndian::read_u16(data);
 
             raw = (raw & !(0b111 << 13)) | (0b11 << 13);
-            data.copy_from_slice(&raw.to_le_bytes());
+            NetworkEndian::write_u16(data, raw);
         }
 
         set_field!(set_tf_field, 0b11, 11);
@@ -741,7 +741,7 @@ mod iphc {
         }
     }
 
-    /// A high-level representation of a 6LoWPAN_IPHC header.
+    /// A high-level representation of a LOWPAN_IPHC header.
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     pub struct Repr {
         pub src_addr: ipv6::Address,
@@ -753,7 +753,7 @@ mod iphc {
     }
 
     impl Repr {
-        /// Parse a 6LoWPAN_IPHC packet and return a high-level representation.
+        /// Parse a LOWPAN_IPHC packet and return a high-level representation.
         pub fn parse<T: AsRef<[u8]> + ?Sized>(
             packet: &Packet<&T>,
             ll_src_addr: Option<LlAddress>,
@@ -763,7 +763,7 @@ mod iphc {
             packet.check_len()?;
 
             if packet.dispatch_field() != DISPATCH {
-                // This is not an 6LoWPAN_IPHC packet.
+                // This is not an LOWPAN_IPHC packet.
                 return Err(Error::Malformed);
             }
 
@@ -785,7 +785,7 @@ mod iphc {
             todo!();
         }
 
-        /// Emit a high-level representation into a 6LoWPAN packet.
+        /// Emit a high-level representation into a LOWPAN_IPHC packet.
         pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
             let mut idx = 2;
 
@@ -878,6 +878,13 @@ mod nhc {
 
     use super::NextHeader;
 
+    mod field {
+        #![allow(non_snake_case)]
+
+        pub const NHC_FIELD: usize = 0;
+        pub const UDP_FIELD: usize = 0;
+    }
+
     macro_rules! get_field {
         ($name:ident, $mask:expr, $shift:expr) => {
             fn $name(&self) -> u8 {
@@ -888,16 +895,16 @@ mod nhc {
         };
     }
 
-    // macro_rules! set_field {
-    //     ($name:ident, $mask:expr, $shift:expr) => {
-    //         fn $name(&self, val: u8) {
-    //             let data = self.buffer.as_ref();
-    //             let mut raw = data[0];
-    //             raw = (raw & !($mask << $shift)) | (val << $shift);
-    //             data[0] = raw;
-    //         }
-    //     };
-    // }
+    macro_rules! set_field {
+        ($name:ident, $mask:expr, $shift:expr) => {
+            fn $name(&mut self, val: u8) {
+                let data = self.buffer.as_mut();
+                let mut raw = data[0];
+                raw = (raw & !($mask << $shift)) | (val << $shift);
+                data[0] = raw;
+            }
+        };
+    }
 
     /// A read/write wrapper around a LOWPAN_NHC frame buffer.
     #[derive(Debug, Clone)]
@@ -907,26 +914,35 @@ mod nhc {
     }
 
     impl<T: AsRef<[u8]>> Packet<T> {
-        pub fn dispatch_unchecked(buffer: T) -> Result<Packet<T>> {
+        pub fn dispatch(buffer: T) -> Result<Packet<T>> {
             let raw = buffer.as_ref();
 
             if raw[0] >> 4 == 0b1110 {
                 // We have a compressed IPv6 Extension Header.
-                Ok(Packet::ExtensionHeader(
-                    ExtensionHeaderPacket::new_unchecked(buffer),
-                ))
+                Ok(Packet::ExtensionHeader(ExtensionHeaderPacket::new_checked(
+                    buffer,
+                )?))
             } else if raw[0] >> 3 == 0b11110 {
                 // We have a compressed UDP header.
-                Ok(Packet::UdpHeader(UdpPacket::new_unchecked(buffer)))
+                Ok(Packet::UdpHeader(UdpPacket::new_checked(buffer)?))
             } else {
                 Err(Error::Unrecognized)
             }
         }
-
-        pub fn dispatch_checked(buffer: T) -> Result<Packet<T>> {
-            todo!();
-        }
     }
+
+    // /// A high-level representation of a 6LoWPAN_NHC.
+    // #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    // pub enum NhcRepr<'a> {
+    //     UdpNhc(UdpNhcRepr<'a>),
+    // }
+
+    // impl<'a> NhcRepr<'a> {
+    //     /// Parse a 6LoWPAN_NHC packet and return a high-level representation.
+    //     pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&'a T>) -> Result<NhcRepr<'a>> {
+    //         todo!();
+    //     }
+    // }
 
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     pub enum ExtensionHeaderId {
@@ -939,14 +955,14 @@ mod nhc {
         Reserved,
     }
 
-    /// A read/write wrapper around a 6LoWPAN_NHC Next Header frame buffer.
+    /// A read/write wrapper around a LOWPAN_NHC Next Header frame buffer.
     #[derive(Debug, Clone)]
     pub struct ExtensionHeaderPacket<T: AsRef<[u8]>> {
         buffer: T,
     }
 
     impl<T: AsRef<[u8]>> ExtensionHeaderPacket<T> {
-        /// Input a raw octet buffer with a 6LoWPAN_NHC frame structure.
+        /// Input a raw octet buffer with a LOWPAN_NHC Extension Header frame structure.
         pub fn new_unchecked(buffer: T) -> ExtensionHeaderPacket<T> {
             ExtensionHeaderPacket { buffer }
         }
@@ -1016,7 +1032,9 @@ mod nhc {
             }
         }
 
+        /// Return the size of the Next Header field.
         fn next_header_size(&self) -> usize {
+            // If nh is set, then the Next Header is compressed using LOWPAN_NHC
             if self.nh_field() == 1 {
                 0
             } else {
@@ -1041,6 +1059,32 @@ mod nhc {
         }
     }
 
+    /// A high-level representation of an LOWPAN_NHC Extension Header header.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    pub struct ExtensionHeaderRepr {
+        ext_header_id: ExtensionHeaderId,
+        next_header: NextHeader,
+    }
+
+    impl ExtensionHeaderRepr {
+        /// Parse a LOWPAN_NHC Extension Header packet and return a high-level representation.
+        pub fn parse<T: AsRef<[u8]> + ?Sized>(
+            packet: &ExtensionHeaderPacket<&T>,
+        ) -> Result<ExtensionHeaderRepr> {
+            todo!();
+        }
+
+        /// Return the length of a header that will be emitted from this high-level representation.
+        pub fn buffer_len(&self) -> usize {
+            todo!();
+        }
+
+        /// Emit a high-level representaiton into a LOWPAN_NHC Extension Header packet.
+        pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
+            todo!();
+        }
+    }
+
     /// A read/write wrapper around a 6LoWPAN_NHC_UDP frame buffer.
     #[derive(Debug, Clone)]
     pub struct UdpPacket<T: AsRef<[u8]>> {
@@ -1048,7 +1092,7 @@ mod nhc {
     }
 
     impl<T: AsRef<[u8]>> UdpPacket<T> {
-        /// Input a raw octet buffer with a 6LoWPAN_NHC frame structure.
+        /// Input a raw octet buffer with a LOWPAN_NHC frame structure for UDP.
         pub fn new_unchecked(buffer: T) -> UdpPacket<T> {
             UdpPacket { buffer }
         }
@@ -1102,17 +1146,14 @@ mod nhc {
                     let data = self.buffer.as_ref();
                     let start = self.nhc_fields_start();
 
-                    0xf000 + NetworkEndian::read_u16(&data[start..start + 1])
+                    0xf000 + data[start] as u16
                 }
                 0b11 => {
                     // The first 12 bits are elided.
                     let data = self.buffer.as_ref();
                     let start = self.nhc_fields_start();
 
-                    println!("Data: {:02x?}", data);
-                    println!("Start: {}", start);
-
-                    0xf0b0 + (NetworkEndian::read_u16(&data[start..start + 1]) >> 4)
+                    0xf0b0 + (data[start] >> 4) as u16
                 }
                 _ => unreachable!(),
             }
@@ -1124,30 +1165,30 @@ mod nhc {
                 0b00 => {
                     // The full 16 bits are carried in-line.
                     let data = self.buffer.as_ref();
-                    let start = self.nhc_fields_start();
+                    let idx = self.nhc_fields_start();
 
-                    NetworkEndian::read_u16(&data[start + 2..start + 4])
+                    NetworkEndian::read_u16(&data[idx + 2..idx + 4])
                 }
                 0b01 => {
-                    // The first 12 bits are elided.
+                    // The first 8 bits are elided.
                     let data = self.buffer.as_ref();
-                    let start = self.nhc_fields_start();
+                    let idx = self.nhc_fields_start();
 
-                    0xf000 + NetworkEndian::read_u16(&data[start + 2..start + 2 + 1])
+                    0xf000 + data[idx] as u16
                 }
                 0b10 => {
                     // The full 16 bits are carried in-line.
                     let data = self.buffer.as_ref();
-                    let start = self.nhc_fields_start();
+                    let idx = self.nhc_fields_start();
 
-                    NetworkEndian::read_u16(&data[start + 1..start + 1 + 2])
+                    NetworkEndian::read_u16(&data[idx + 1..idx + 1 + 2])
                 }
                 0b11 => {
                     // The first 12 bits are elided.
                     let data = self.buffer.as_ref();
                     let start = self.nhc_fields_start();
 
-                    0xf0b0 + (NetworkEndian::read_u16(&data[start..start + 1]) & 0x000f)
+                    0xf0b0 + (NetworkEndian::read_u16(&data[start..start + 1]) & 0xff)
                 }
                 _ => unreachable!(),
             }
@@ -1201,50 +1242,103 @@ mod nhc {
             let start = 1 + self.ports_size() + self.checksum_size();
             &mut self.buffer.as_mut()[start..]
         }
-    }
 
-    /// A high-level representation of a 6LoWPAN_NHC.
-    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-    pub enum NhcRepr<'a> {
-        UdpNhc(UdpNhcRepr<'a>),
-    }
+        set_field!(set_checksum_field, 0b1, 2);
+        set_field!(set_ports_field, 0b11, 0);
 
-    impl<'a> NhcRepr<'a> {
-        /// Parse a 6LoWPAN_NHC packet and return a high-level representation.
-        pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&'a T>) -> Result<NhcRepr<'a>> {
-            todo!();
+        fn set_ports(&mut self, src_port: u16, dst_port: u16) {
+            let mut idx = 1;
+
+            match (src_port, dst_port) {
+                (0xf0b0..=0xf0bf, 0xf0b0..=0xf0bf) => {
+                    // We can compress both the source and destination ports.
+                    self.set_ports_field(0b11);
+                    let mut data = self.buffer.as_mut();
+                    data[idx] = (((src_port - 0xf0b0) as u8) << 4) & ((dst_port - 0xf0b0) as u8);
+                }
+                (0xf000..=0xf0ff, _) => {
+                    // We can compress the source port, but not the destination port.
+                    self.set_ports_field(0b10);
+                    let mut data = self.buffer.as_mut();
+                    data[idx] = (src_port - 0xf000) as u8;
+                    idx += 1;
+
+                    NetworkEndian::write_u16(&mut data[idx..idx + 2], dst_port);
+                }
+                (_, 0xf000..=0xf0ff) => {
+                    // We can compress the destination port, but not the source port.
+                    self.set_ports_field(0b01);
+                    let mut data = self.buffer.as_mut();
+                    NetworkEndian::write_u16(&mut data[idx..idx + 2], src_port);
+                    idx += 2;
+                    data[idx] = (dst_port - 0xf000) as u8;
+                }
+                (_, _) => {
+                    // We cannot compress any port.
+                    self.set_ports_field(0b00);
+                    let mut data = self.buffer.as_mut();
+                    NetworkEndian::write_u16(&mut data[idx..idx + 2], src_port);
+                    idx += 2;
+                    NetworkEndian::write_u16(&mut data[idx..idx + 2], dst_port);
+                }
+            };
+        }
+
+        fn set_checksum(&mut self, checksum: Option<u16>) {
+            if let Some(checksum) = checksum {
+                self.set_checksum_field(0b0);
+                let idx = 1 + self.ports_size();
+                let mut data = self.buffer.as_mut();
+                NetworkEndian::write_u16(&mut data[idx..idx + 2], checksum);
+            }
         }
     }
 
-    /// A high-level representation of a 6LoWPAN_NHC_UDP header.
+    /// A high-level representation of a LOWPAN_NHC UDP header.
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     pub struct UdpNhcRepr<'a>(pub UdpRepr<'a>);
 
     impl<'a> UdpNhcRepr<'a> {
-        /// Parse a 6LoWPAN_NHC_UDP packet and return a high-level representation.
+        /// Parse a LOWWPAN_NHC UDP packet and return a high-level representation.
         pub fn parse<T: AsRef<[u8]> + ?Sized>(
             packet: &UdpPacket<&'a T>,
             src_addr: &ipv6::Address,
             dst_addr: &ipv6::Address,
             checksum: Option<u16>,
-        ) -> Result<UdpRepr<'a>> {
+        ) -> Result<UdpNhcRepr<'a>> {
             // TODO: Compute the checksum.
-
-            Ok(UdpRepr {
+            Ok(UdpNhcRepr(UdpRepr {
                 src_port: packet.src_port(),
                 dst_port: packet.dst_port(),
                 payload: packet.payload(),
-            })
+            }))
         }
 
         /// Return the length of a packet that will be emitted from this high-level representation.
         pub fn buffer_len(&self) -> usize {
-            todo!();
+            let mut len = 1; // The minimal header size
+
+            len += 2; // XXX We assume we will add the checksum at the end
+
+            // Check if we can compress the source and destination ports
+            let len = match (self.src_port, self.dst_port) {
+                (0xf0b0..=0xf0bf, 0xf0b0..=0xf0bf) => len + 1,
+                (0xf000..=0xf0ff, _) | (_, 0xf000..=0xf0ff) => len + 3,
+                (_, _) => len + 4,
+            };
+
+            len + self.payload.len()
         }
 
-        /// Emit a high-level representation into a 6LoWPAN_NHC_UDP packet.
-        pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut UdpPacket<T>) {
-            todo!();
+        /// Emit a high-level representation into a LOWPAN_NHC UDP header.
+        pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
+            &self,
+            packet: &mut UdpPacket<T>,
+            checksum: Option<u16>,
+        ) {
+            packet.set_ports(self.src_port, self.dst_port);
+            packet.set_checksum(checksum);
+            packet.payload_mut().copy_from_slice(self.payload);
         }
     }
 
@@ -1261,6 +1355,7 @@ mod nhc {
             &mut self.0
         }
     }
+
     #[cfg(test)]
     mod test {
         use super::*;
@@ -1273,6 +1368,24 @@ mod nhc {
             assert_eq!(packet.checksum(), Some(0x28c4));
             assert_eq!(packet.src_port(), 5678);
             assert_eq!(packet.dst_port(), 8765);
+        }
+
+        #[test]
+        fn udp_emit() {
+            let udp = UdpNhcRepr(UdpRepr {
+                src_port: 0xf0b1,
+                dst_port: 0xf001,
+                payload: b"Hello World",
+            });
+
+            let len = udp.buffer_len();
+            let mut buffer = [0u8; 127];
+            let mut packet = UdpPacket::new_unchecked(&mut buffer[..len]);
+            udp.emit(&mut packet, None);
+
+            assert_eq!(packet.src_port(), 0xf0b1);
+            assert_eq!(packet.dst_port(), 0xf001);
+            assert_eq!(packet.payload_mut(), b"Hello World");
         }
     }
 }
@@ -1313,7 +1426,7 @@ mod test {
         assert_eq!(iphc_repr.next_header, NextHeader::Compressed);
 
         // We dispatch the NHC packet.
-        let nhc_packet = nhc::Packet::dispatch_unchecked(iphc_frame.payload()).unwrap();
+        let nhc_packet = nhc::Packet::dispatch(iphc_frame.payload()).unwrap();
 
         let udp_payload = match nhc_packet {
             nhc::Packet::ExtensionHeader(ext_packet) => {
