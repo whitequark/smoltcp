@@ -1085,6 +1085,8 @@ mod nhc {
         }
     }
 
+    pub(crate) const UDP_DISPATCH: u8 = 0b11110;
+
     /// A read/write wrapper around a 6LoWPAN_NHC_UDP frame buffer.
     #[derive(Debug, Clone)]
     pub struct UdpPacket<T: AsRef<[u8]>> {
@@ -1123,6 +1125,7 @@ mod nhc {
             self.buffer
         }
 
+        get_field!(dispatch_field, 0b11111, 3);
         get_field!(checksum_field, 0b1, 2);
         get_field!(ports_field, 0b11, 0);
 
@@ -1243,6 +1246,12 @@ mod nhc {
             &mut self.buffer.as_mut()[start..]
         }
 
+        /// Set the dispatch field to `0b11110`.
+        fn set_dispatch_field(&mut self) {
+            let data = self.buffer.as_mut();
+            data[0] = (data[0] & !(0b11111 << 3)) | (UDP_DISPATCH << 3);
+        }
+
         set_field!(set_checksum_field, 0b1, 2);
         set_field!(set_ports_field, 0b11, 0);
 
@@ -1306,6 +1315,13 @@ mod nhc {
             dst_addr: &ipv6::Address,
             checksum: Option<u16>,
         ) -> Result<UdpNhcRepr<'a>> {
+            // Ensure basic accessors will work.
+            packet.check_len()?;
+
+            if packet.dispatch_field() != UDP_DISPATCH {
+                return Err(Error::Malformed);
+            }
+
             // TODO: Compute the checksum.
             Ok(UdpNhcRepr(UdpRepr {
                 src_port: packet.src_port(),
@@ -1336,6 +1352,7 @@ mod nhc {
             packet: &mut UdpPacket<T>,
             checksum: Option<u16>,
         ) {
+            packet.set_dispatch_field();
             packet.set_ports(self.src_port, self.dst_port);
             packet.set_checksum(checksum);
             packet.payload_mut().copy_from_slice(self.payload);
@@ -1364,7 +1381,8 @@ mod nhc {
         fn udp_nhc_fields() {
             let bytes = [0xf0, 0x16, 0x2e, 0x22, 0x3d, 0x28, 0xc4];
 
-            let packet = UdpPacket::new_unchecked(bytes);
+            let packet = UdpPacket::new_checked(&bytes[..]).unwrap();
+            assert_eq!(packet.dispatch_field(), UDP_DISPATCH);
             assert_eq!(packet.checksum(), Some(0x28c4));
             assert_eq!(packet.src_port(), 5678);
             assert_eq!(packet.dst_port(), 8765);
@@ -1383,6 +1401,7 @@ mod nhc {
             let mut packet = UdpPacket::new_unchecked(&mut buffer[..len]);
             udp.emit(&mut packet, None);
 
+            assert_eq!(packet.dispatch_field(), UDP_DISPATCH);
             assert_eq!(packet.src_port(), 0xf0b1);
             assert_eq!(packet.dst_port(), 0xf001);
             assert_eq!(packet.payload_mut(), b"Hello World");
