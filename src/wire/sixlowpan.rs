@@ -955,6 +955,8 @@ mod nhc {
         Reserved,
     }
 
+    pub(crate) const EXT_HEADER_DISPATCH: u8 = 0b1110;
+
     /// A read/write wrapper around a LOWPAN_NHC Next Header frame buffer.
     #[derive(Debug, Clone)]
     pub struct ExtensionHeaderPacket<T: AsRef<[u8]>> {
@@ -993,6 +995,7 @@ mod nhc {
             self.buffer
         }
 
+        get_field!(dispatch_field, 0b1111, 4);
         get_field!(eid_field, 0b111, 1);
         get_field!(nh_field, 0b1, 0);
 
@@ -1027,7 +1030,7 @@ mod nhc {
                 let mut start = 1;
 
                 let data = self.buffer.as_ref();
-                let nh = data[start..start + 1][0];
+                let nh = data[start];
                 NextHeader::Uncompressed(IpProtocol::from(nh))
             }
         }
@@ -1057,6 +1060,52 @@ mod nhc {
             let start = 2 + self.next_header_size();
             &mut self.buffer.as_mut()[start..]
         }
+
+        /// Set the dispatch field to `0b1110`.
+        fn set_dispatch_field(&mut self) {
+            let data = self.buffer.as_mut();
+            data[0] = (data[0] & !(0b1111 << 4)) | (EXT_HEADER_DISPATCH << 4);
+        }
+
+        set_field!(set_eid_field, 0b111, 1);
+        set_field!(set_nh_field, 0b1, 0);
+
+        /// Set the Extension Header ID field.
+        fn set_extension_header_id(&mut self, ext_header_id: ExtensionHeaderId) {
+            let id = match ext_header_id {
+                ExtensionHeaderId::HopByHopHeader => 0,
+                ExtensionHeaderId::RoutingHeader => 1,
+                ExtensionHeaderId::FragmentHeader => 2,
+                ExtensionHeaderId::DestinationOptionsHeader => 3,
+                ExtensionHeaderId::MobilityHeader => 4,
+                ExtensionHeaderId::Header => 7,
+                _ => unreachable!(),
+            };
+
+            self.set_eid_field(id);
+        }
+
+        /// Set the Next Header.
+        fn set_next_header(&mut self, next_header: NextHeader) {
+            match next_header {
+                NextHeader::Compressed => self.set_nh_field(0b1),
+                NextHeader::Uncompressed(nh) => {
+                    self.set_nh_field(0b0);
+
+                    let start = 1;
+                    let data = self.buffer.as_mut();
+                    data[start] = nh.into();
+                }
+            }
+        }
+
+        /// Set the length.
+        fn set_length(&mut self, length: u8) {
+            let start = 1 + self.next_header_size();
+
+            let data = self.buffer.as_mut();
+            data[start] = length;
+        }
     }
 
     /// A high-level representation of an LOWPAN_NHC Extension Header header.
@@ -1064,6 +1113,7 @@ mod nhc {
     pub struct ExtensionHeaderRepr {
         ext_header_id: ExtensionHeaderId,
         next_header: NextHeader,
+        length: u8,
     }
 
     impl ExtensionHeaderRepr {
@@ -1071,17 +1121,39 @@ mod nhc {
         pub fn parse<T: AsRef<[u8]> + ?Sized>(
             packet: &ExtensionHeaderPacket<&T>,
         ) -> Result<ExtensionHeaderRepr> {
-            todo!();
+            // Ensure basic accessors will work.
+            packet.check_len()?;
+
+            if packet.dispatch_field() != EXT_HEADER_DISPATCH {
+                return Err(Error::Malformed);
+            }
+
+            Ok(ExtensionHeaderRepr {
+                ext_header_id: packet.extension_header_id(),
+                next_header: packet.next_header(),
+                length: packet.payload().len() as u8,
+            })
         }
 
         /// Return the length of a header that will be emitted from this high-level representation.
         pub fn buffer_len(&self) -> usize {
-            todo!();
+            let mut len = 1; // The minimal header size
+
+            if self.next_header != NextHeader::Compressed {
+                len += 1;
+            }
+
+            len += 1; // The length
+
+            len
         }
 
         /// Emit a high-level representaiton into a LOWPAN_NHC Extension Header packet.
-        pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
-            todo!();
+        pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut ExtensionHeaderPacket<T>) {
+            packet.set_dispatch_field();
+            packet.set_extension_header_id(self.ext_header_id);
+            packet.set_next_header(self.next_header);
+            packet.set_length(self.length);
         }
     }
 
@@ -1376,6 +1448,43 @@ mod nhc {
     #[cfg(test)]
     mod test {
         use super::*;
+
+        #[test]
+        fn ext_header_nhc_fields() {
+            let bytes = [0xe3, 0x06, 0x03, 0x00, 0xff, 0x00, 0x00, 0x00];
+
+            let packet = ExtensionHeaderPacket::new_checked(&bytes[..]).unwrap();
+            assert_eq!(packet.dispatch_field(), EXT_HEADER_DISPATCH);
+            assert_eq!(packet.length_field(), 6);
+            assert_eq!(
+                packet.extension_header_id(),
+                ExtensionHeaderId::RoutingHeader
+            );
+
+            assert_eq!(packet.payload(), [0x03, 0x00, 0xff, 0x00, 0x00, 0x00]);
+        }
+
+        #[test]
+        fn ext_header_emit() {
+            let ext_header = ExtensionHeaderRepr {
+                ext_header_id: ExtensionHeaderId::RoutingHeader,
+                next_header: NextHeader::Compressed,
+                length: 6,
+            };
+
+            let len = ext_header.buffer_len();
+            let mut buffer = [0u8; 127];
+            let mut packet = ExtensionHeaderPacket::new_unchecked(&mut buffer[..len]);
+            ext_header.emit(&mut packet);
+
+            assert_eq!(packet.dispatch_field(), EXT_HEADER_DISPATCH);
+            assert_eq!(packet.next_header(), NextHeader::Compressed);
+            assert_eq!(packet.length_field(), 6);
+            assert_eq!(
+                packet.extension_header_id(),
+                ExtensionHeaderId::RoutingHeader
+            );
+        }
 
         #[test]
         fn udp_nhc_fields() {
