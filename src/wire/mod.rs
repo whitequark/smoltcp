@@ -83,7 +83,7 @@ mod ethernet;
 mod arp;
 #[cfg(feature = "ieee802154")]
 mod ieee802154;
-#[cfg(feature = "6lowpan")]
+#[cfg(feature = "sixlowpan")]
 mod sixlowpan;
 pub(crate) mod ip;
 #[cfg(feature = "proto-ipv4")]
@@ -131,6 +131,17 @@ pub use self::arp::{Hardware as ArpHardware,
                     Operation as ArpOperation,
                     Packet as ArpPacket,
                     Repr as ArpRepr};
+
+#[cfg(feature = "sixlowpan")]
+pub use self::sixlowpan::{iphc::{Packet as SixlowpanIphcPacket,
+                                 Repr as SixlowpanIphcRepr},
+                          nhc::{Packet as SixlowpanNhcPacket,
+                                ExtensionHeaderPacket as SixlowpanExtHeaderPacket,
+                                ExtensionHeaderRepr as SixlowpanExtHeaderRepr,
+                                UdpPacket as SixlowpanUdpPacket,
+                                UdpNhcRepr as SixlowpanUdpRepr},
+                          NextHeader as SixlowpanNextHeader,};
+                    
 
 #[cfg(feature = "ieee802154")]
 pub use self::ieee802154::{Address as Ieee802154Address,

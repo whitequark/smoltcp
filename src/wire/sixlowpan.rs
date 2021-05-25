@@ -21,7 +21,7 @@ pub enum Address<'a> {
 
 impl<'a> Address<'a> {
     /// Resolve the address provided by the IPHC encoding.
-    fn resolve(self, ll_addr: Option<LlAddress>) -> ipv6::Address {
+    pub(crate) fn resolve(self, ll_addr: Option<LlAddress>) -> ipv6::Address {
         match self {
             Address::Complete(addr) => addr,
             Address::Elided => {
@@ -71,7 +71,7 @@ impl<'a> Address<'a> {
     }
 }
 
-mod iphc {
+pub mod iphc {
     use crate::wire::ieee802154::Address as LlAddress;
     use crate::wire::ipv6;
     use crate::wire::IpProtocol;
@@ -162,7 +162,7 @@ mod iphc {
                 NextHeader::Compressed
             } else {
                 // The full 8 bits for Next Header are carried in-line.
-                let mut start = (self.ip_fields_start() + self.traffic_class_size()) as usize;
+                let start = (self.ip_fields_start() + self.traffic_class_size()) as usize;
 
                 let data = self.buffer.as_ref();
                 let nh = data[start..start + 1][0];
@@ -174,7 +174,7 @@ mod iphc {
         pub fn hop_limit(&self) -> u8 {
             match self.hlim_field() {
                 0b00 => {
-                    let mut start = (self.ip_fields_start()
+                    let start = (self.ip_fields_start()
                         + self.traffic_class_size()
                         + self.next_header_size()) as usize;
 
@@ -210,7 +210,7 @@ mod iphc {
 
         /// Parse the source address field.
         pub fn src_addr(&self) -> Address {
-            let mut start = (self.ip_fields_start()
+            let start = (self.ip_fields_start()
                 + self.traffic_class_size()
                 + self.next_header_size()
                 + self.hop_limit_size()) as usize;
@@ -295,7 +295,7 @@ mod iphc {
 
         /// Parse the destination address field.
         pub fn dst_addr(&self) -> Address {
-            let mut start = (self.ip_fields_start()
+            let start = (self.ip_fields_start()
                 + self.traffic_class_size()
                 + self.next_header_size()
                 + self.hop_limit_size()
@@ -787,7 +787,7 @@ mod iphc {
 
         /// Emit a high-level representation into a LOWPAN_IPHC packet.
         pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
-            let mut idx = 2;
+            let idx = 2;
 
             packet.set_dispatch_field();
 
@@ -868,7 +868,7 @@ mod iphc {
     }
 }
 
-mod nhc {
+pub mod nhc {
     use crate::wire::ipv6;
     use crate::wire::udp::Repr as UdpRepr;
     use crate::wire::IpProtocol;
@@ -916,6 +916,9 @@ mod nhc {
     impl<T: AsRef<[u8]>> Packet<T> {
         pub fn dispatch(buffer: T) -> Result<Packet<T>> {
             let raw = buffer.as_ref();
+            
+            #[cfg(feature = "std")]
+            println!("{:02x?}", raw[0]);
 
             if raw[0] >> 4 == 0b1110 {
                 // We have a compressed IPv6 Extension Header.
@@ -953,6 +956,20 @@ mod nhc {
         MobilityHeader,
         Header,
         Reserved,
+    }
+
+    impl Into<IpProtocol> for ExtensionHeaderId {
+        fn into(self) -> IpProtocol {
+            match self {
+                ExtensionHeaderId::HopByHopHeader => IpProtocol::HopByHop,
+                ExtensionHeaderId::RoutingHeader => IpProtocol::Ipv6Route,
+                ExtensionHeaderId::FragmentHeader => IpProtocol::Ipv6Frag,
+                ExtensionHeaderId::DestinationOptionsHeader => IpProtocol::Ipv6Opts,
+                ExtensionHeaderId::MobilityHeader => IpProtocol::Unknown(0),
+                ExtensionHeaderId::Header => IpProtocol::Unknown(0),
+                ExtensionHeaderId::Reserved => IpProtocol::Unknown(0),
+            }
+        }
     }
 
     pub(crate) const EXT_HEADER_DISPATCH: u8 = 0b1110;
@@ -1015,7 +1032,7 @@ mod nhc {
 
         /// Return the length field.
         pub fn length_field(&self) -> u8 {
-            let mut start = 1 + self.next_header_size();
+            let start = 1 + self.next_header_size();
 
             let data = self.buffer.as_ref();
             data[start]
@@ -1027,7 +1044,7 @@ mod nhc {
                 NextHeader::Compressed
             } else {
                 // The full 8 bits for Next Header are carried in-line.
-                let mut start = 1;
+                let start = 1;
 
                 let data = self.buffer.as_ref();
                 let nh = data[start];
