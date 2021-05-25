@@ -36,6 +36,8 @@ struct InterfaceInner<'a> {
     neighbor_cache:         Option<NeighborCache<'a>>,
     #[cfg(feature = "medium-ethernet")]
     ethernet_addr:          Option<EthernetAddress>,
+    #[cfg(feature = "medium-sixlowpan")]
+    ieee802154_addr:        Option<Ieee802154Address>,
     ip_addrs:               ManagedSlice<'a, IpCidr>,
     #[cfg(feature = "proto-ipv4")]
     any_ip:                 bool,
@@ -55,6 +57,8 @@ pub struct InterfaceBuilder <'a, DeviceT: for<'d> Device<'d>> {
     ethernet_addr:          Option<EthernetAddress>,
     #[cfg(feature = "medium-ethernet")]
     neighbor_cache:         Option<NeighborCache<'a>>,
+    #[cfg(feature = "medium-sixlowpan")]
+    ieee802154_addr:        Option<Ieee802154Address>,
     ip_addrs:               ManagedSlice<'a, IpCidr>,
     #[cfg(feature = "proto-ipv4")]
     any_ip:                 bool,
@@ -99,6 +103,8 @@ let iface = InterfaceBuilder::new(device)
             ethernet_addr:       None,
             #[cfg(feature = "medium-ethernet")]
             neighbor_cache:      None,
+            #[cfg(feature = "medium-sixlowpan")]
+            ieee802154_addr:     None,
             ip_addrs:            ManagedSlice::Borrowed(&mut []),
             #[cfg(feature = "proto-ipv4")]
             any_ip:              false,
@@ -219,6 +225,11 @@ let iface = InterfaceBuilder::new(device)
                 assert!(self.neighbor_cache.is_none(), "neighbor_cache is set, but device medium is IP");
                 (None, None)
             }
+            #[cfg(feature = "medium-sixlowpan")]
+            Medium::Sixlowpan => {
+                assert!(self.ieee802154_addr.is_some(), "ieee802154_addr required option was not set");
+                (None, None)
+            }
         };
 
         Interface {
@@ -226,6 +237,8 @@ let iface = InterfaceBuilder::new(device)
             inner: InterfaceInner {
                 #[cfg(feature = "medium-ethernet")]
                 ethernet_addr,
+                #[cfg(feature = "medium-sixlowpan")]
+                ieee802154_addr: self.ieee802154_addr,
                 ip_addrs: self.ip_addrs,
                 #[cfg(feature = "proto-ipv4")]
                 any_ip: self.any_ip,
@@ -630,6 +643,24 @@ impl<'a, DeviceT> Interface<'a, DeviceT>
                             }
                         })
                     }
+                    #[cfg(feature = "medium-sixlowpan")]
+                    Medium::Sixlowpan => {
+                        inner.process_sixlowpan(sockets, timestamp, &frame).map_err(|err| {
+                            net_debug!("cannot process ingress packet: {}", err);
+                            err
+                        }).and_then(|response| {
+                            processed_any = true;
+                            match response {
+                                Some(packet) => {
+                                    inner.dispatch_ip(tx_token, timestamp, packet).map_err(|err| {
+                                        net_debug!("cannot dispatch response packet: {}", err);
+                                        err
+                                    })
+                                }
+                                None => Ok(())
+                            }
+                        })
+                    }
                 }
             })?;
         }
@@ -690,6 +721,8 @@ impl<'a, DeviceT> Interface<'a, DeviceT>
                             Medium::Ethernet => _caps.max_transmission_unit - EthernetFrame::<&[u8]>::header_len(),
                             #[cfg(feature = "medium-ip")]
                             Medium::Ip => _caps.max_transmission_unit,
+                            #[cfg(feature = "medium-sixlowpan")]
+                            Medium::Sixlowpan => todo!(),
                         };
                         socket.dispatch(timestamp, ip_mtu, |response|
                             respond!(IpPacket::Tcp(response)))
@@ -906,6 +939,81 @@ impl<'a> InterfaceInner<'a> {
             }
             // Drop all other traffic.
             _ => Err(Error::Unrecognized),
+        }
+    }
+
+    
+    #[cfg(feature = "medium-sixlowpan")]
+    fn process_sixlowpan<'frame, T: AsRef<[u8]> + ?Sized>
+                  (&mut self, sockets: &mut SocketSet, timestamp: Instant, sixlowpan_payload: &'frame T) ->
+                  Result<Option<IpPacket<'frame>>>
+    {
+        let ieee802154_frame = Ieee802154Frame::new_checked(sixlowpan_payload)?;
+        let ieee802154_repr = Ieee802154Repr::parse(&ieee802154_frame)?;
+
+        match ieee802154_repr.payload {
+            Some(payload) => {
+                // The first header needs to be an IPHC header.
+                let iphc_packet = SixlowpanIphcPacket::new_checked(payload)?;
+                let iphc_repr = SixlowpanIphcRepr::parse(&iphc_packet, ieee802154_repr.src_addr, ieee802154_repr.dst_addr)?;
+
+                if !iphc_repr.src_addr.is_unicast() {
+                    // Discard packets with non-unicast source addresses.
+                    net_debug!("non-unicast source address");
+                    return Err(Error::Malformed)
+                }
+
+                let payload = iphc_packet.payload();
+                let ip_repr = IpRepr::Sixlowpan(iphc_repr);
+
+                // Currently we assume the next header is a UDP, so we mark all the rest with todo.
+                match iphc_repr.next_header {
+                    SixlowpanNextHeader::Compressed => {
+                        match SixlowpanNhcPacket::dispatch(payload)? {
+                            SixlowpanNhcPacket::ExtensionHeader(ext_header) => todo!(),
+                            SixlowpanNhcPacket::UdpHeader(udp_packet) => {
+                                // Handle the UDP
+                                let udp_repr = SixlowpanUdpRepr::parse(&udp_packet, &iphc_repr.src_addr, &iphc_repr.dst_addr, udp_packet.checksum())?;
+
+                                // Look for UDP sockets that will accept the UDP packet.
+                                // If it does not accept the packet, then send an ICMP message.
+                                for mut udp_socket in sockets.iter_mut().filter_map(UdpSocket::downcast) {
+                                    if !udp_socket.accepts(&ip_repr, &udp_repr) { continue; }
+
+                                    match udp_socket.process(&ip_repr, &udp_repr) {
+                                        Ok(()) => return Ok(None),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+
+                                // The packet wasn't handled by a socket, send an ICMP port unreachable packet.
+                                match ip_repr {
+                                    #[cfg(feature = "proto-ipv6")]
+                                    IpRepr::Ipv6(ipv6_repr) => {
+                                        let payload_len = icmp_reply_payload_len(payload.len(), IPV6_MIN_MTU,
+                                                                                 ipv6_repr.buffer_len());
+                                        let icmpv6_reply_repr = Icmpv6Repr::DstUnreachable {
+                                            reason: Icmpv6DstUnreachable::PortUnreachable,
+                                            header: ipv6_repr,
+                                            data:   &payload[0..payload_len]
+                                        };
+                                        Ok(self.icmpv6_reply(ipv6_repr, icmpv6_reply_repr))
+                                    },
+                                    IpRepr::Unspecified { .. } => Err(Error::Unaddressable),
+                                    _ => unreachable!(),
+                                }
+                            }
+                        }
+                    }
+                    SixlowpanNextHeader::Uncompressed(nxt_hdr) => {
+                        match nxt_hdr {
+                            IpProtocol::Icmpv6 => self.process_icmpv6(sockets, timestamp, ip_repr, iphc_packet.payload()),
+                            hdr => todo!("{:?}", hdr),
+                        }
+                    }
+                }
+            }
+            None => Ok(None)
         }
     }
 
@@ -1481,6 +1589,25 @@ impl<'a> InterfaceInner<'a> {
                 };
                 Ok(self.icmpv6_reply(ipv6_repr, icmpv6_reply_repr))
             },
+            #[cfg(feature = "sixlowpan")]
+            IpRepr::Sixlowpan(sixlowpan_repr) => {
+                let ipv6_repr = Ipv6Repr {
+                    src_addr: sixlowpan_repr.src_addr,
+                    dst_addr: sixlowpan_repr.dst_addr,
+                    next_header: IpProtocol::Udp, // XXX
+                    payload_len: ip_payload.len(),
+                    hop_limit: sixlowpan_repr.hop_limit,
+                };
+
+                let payload_len = icmp_reply_payload_len(ip_payload.len(), IPV6_MIN_MTU,
+                                                         sixlowpan_repr.buffer_len());
+                let icmpv6_reply_repr = Icmpv6Repr::DstUnreachable {
+                    reason: Icmpv6DstUnreachable::PortUnreachable,
+                    header: ipv6_repr,
+                    data:   &ip_payload[0..payload_len]
+                };
+                Ok(self.icmpv6_reply(ipv6_repr, icmpv6_reply_repr))
+            }
             IpRepr::Unspecified { .. } => Err(Error::Unaddressable),
         }
     }
@@ -1589,6 +1716,8 @@ impl<'a> InterfaceInner<'a> {
                         .found(),
                     #[cfg(feature = "medium-ip")]
                     Medium::Ip => true,
+                    #[cfg(feature = "medium-sixlowpan")]
+                    Medium::Sixlowpan => todo!(),
                 }
             }
             Err(_) => false
@@ -1731,6 +1860,11 @@ impl<'a> InterfaceInner<'a> {
 
                     Ok(())
                 })
+            }
+            #[cfg(feature = "medium-sixlowpan")]
+            Medium::Sixlowpan => {
+                // Conver the packet to a LOWPAN compatible packet.
+                todo!();
             }
         }
     }
@@ -2627,7 +2761,9 @@ mod test {
                             Ipv4Packet::new_checked(eth_frame.payload()).ok()?
                         }
                         #[cfg(feature = "medium-ip")]
-                        Medium::Ip => Ipv4Packet::new_checked(&frame[..]).ok()?
+                        Medium::Ip => Ipv4Packet::new_checked(&frame[..]).ok()?,
+                        #[cfg(feature = "medium-sixlowpan")]
+                        Medium::Sixlowpan => todo!(),
                     };
                     let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, &checksum_caps).ok()?;
                     let ip_payload = ipv4_packet.payload();

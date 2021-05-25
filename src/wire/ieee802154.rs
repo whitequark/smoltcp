@@ -108,6 +108,20 @@ impl Address {
         Self::Extended(a)
     }
 
+    pub fn from_bytes(a: &[u8]) -> Self {
+        if a.len() == 2 {
+            let mut b = [0u8; 2];
+            b.copy_from_slice(a);
+            Address::Short(b)
+        } else if a.len() == 8 {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(a);
+            Address::Extended(b)
+        } else {
+            panic!("Not an IEEE802.15.4 address");
+        }
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Address::Absent => &[],

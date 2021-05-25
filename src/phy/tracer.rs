@@ -135,6 +135,8 @@ impl<'a> fmt::Display for Packet<'a> {
                 Ok(crate::wire::IpVersion::Ipv6) => crate::wire::Ipv6Packet::<&'static [u8]>::pretty_print(&self.buffer, f, &mut indent),
                 _ => f.write_str("unrecognized IP version")
             }
+            #[cfg(feature = "medium-sixlowpan")]
+            Medium::Sixlowpan => todo!(),
         }
     }
 }

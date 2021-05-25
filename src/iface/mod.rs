@@ -7,7 +7,7 @@ provides lookup and caching of hardware addresses, and handles management packet
 #[cfg(feature = "medium-ethernet")]
 mod neighbor;
 mod route;
-#[cfg(any(feature = "medium-ethernet", feature = "medium-ip"))]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-ip", feature = "medium-sixlowpan"))]
 mod interface;
 
 #[cfg(feature = "medium-ethernet")]
@@ -18,5 +18,5 @@ pub(crate) use self::neighbor::Answer as NeighborAnswer;
 pub use self::neighbor::Cache as NeighborCache;
 pub use self::route::{Route, Routes};
 
-#[cfg(any(feature = "medium-ethernet", feature = "medium-ip"))]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-ip", feature = "medium-sixlowpan"))]
 pub use self::interface::{Interface, InterfaceBuilder};
