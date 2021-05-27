@@ -675,13 +675,11 @@ pub mod iphc {
                 if dst[1] == 0x02 && dst[2..15] == [0; 13] {
                     self.set_dam_field(0b11);
 
-                    let raw = self.buffer.as_mut();
                     self.set_field(idx, &[dst[15]]);
                     idx += 1;
                 } else if dst[2..13] == [0; 11] {
                     self.set_dam_field(0b10);
 
-                    let raw = self.buffer.as_mut();
                     self.set_field(idx, &[dst[1]]);
                     idx += 1;
                     self.set_field(idx, &dst[13..]);
@@ -782,7 +780,76 @@ pub mod iphc {
 
         /// Return the length of a header that will be emitted from this high-level representation.
         pub fn buffer_len(&self) -> usize {
-            todo!();
+            2 + if self.src_addr == ipv6::Address::UNSPECIFIED {
+                0
+            } else if self.src_addr.is_link_local() {
+                let src = self.src_addr.as_bytes();
+                let ll = [src[14], src[15]];
+
+                if src[8..14] == [0, 0, 0, 0xff, 0xfe, 0] {
+                    if self.ll_src_addr == Some(LlAddress::Short(ll)) {
+                        0
+                    } else {
+                        2
+                    }
+                } else {
+                    if self
+                        .ll_src_addr
+                        .map(|addr| {
+                            addr.as_eui_64()
+                                .map(|addr| addr[..] == src[8..])
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
+                    {
+                        0
+                    } else {
+                        8
+                    }
+                }
+            } else {
+                16
+            } + if self.dst_addr.is_multicast() {
+                let dst = self.dst_addr.as_bytes();
+                if dst[1] == 0x02 && dst[2..15] == [0; 13] {
+                    1
+                } else if dst[2..13] == [0; 11] {
+                    4
+                } else if dst[2..11] == [0; 9] {
+                    6
+                } else {
+                    16
+                }
+            } else {
+                let dst = self.dst_addr.as_bytes();
+                if self.dst_addr.is_link_local() {
+                    if dst[8..14] == [0, 0, 0, 0xff, 0xfe, 0] {
+                        let ll = [dst[14], dst[15]];
+
+                        if self.ll_dst_addr == Some(LlAddress::Short(ll)) {
+                            0
+                        } else {
+                            2
+                        }
+                    } else {
+                        if self
+                            .ll_dst_addr
+                            .map(|addr| {
+                                addr.as_eui_64()
+                                    .map(|addr| addr[..] == dst[8..])
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                        {
+                            0
+                        } else {
+                            8
+                        }
+                    }
+                } else {
+                    16
+                }
+            }
         }
 
         /// Emit a high-level representation into a LOWPAN_IPHC packet.
@@ -875,6 +942,7 @@ pub mod nhc {
     use crate::Error;
     use crate::Result;
     use byteorder::{ByteOrder, NetworkEndian};
+    use ipv6::Address;
 
     use super::NextHeader;
 
@@ -916,7 +984,7 @@ pub mod nhc {
     impl<T: AsRef<[u8]>> Packet<T> {
         pub fn dispatch(buffer: T) -> Result<Packet<T>> {
             let raw = buffer.as_ref();
-            
+
             #[cfg(feature = "std")]
             println!("{:02x?}", raw[0]);
 
@@ -1382,13 +1450,11 @@ pub mod nhc {
             };
         }
 
-        fn set_checksum(&mut self, checksum: Option<u16>) {
-            if let Some(checksum) = checksum {
-                self.set_checksum_field(0b0);
-                let idx = 1 + self.ports_size();
-                let mut data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[idx..idx + 2], checksum);
-            }
+        fn set_checksum(&mut self, checksum: u16) {
+            self.set_checksum_field(0b0);
+            let idx = 1 + self.ports_size();
+            let mut data = self.buffer.as_mut();
+            NetworkEndian::write_u16(&mut data[idx..idx + 2], checksum);
         }
     }
 
@@ -1439,12 +1505,52 @@ pub mod nhc {
         pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
             &self,
             packet: &mut UdpPacket<T>,
-            checksum: Option<u16>,
+            src_addr: &Address,
+            dst_addr: &Address,
         ) {
             packet.set_dispatch_field();
             packet.set_ports(self.src_port, self.dst_port);
-            packet.set_checksum(checksum);
-            packet.payload_mut().copy_from_slice(self.payload);
+
+            packet.set_checksum(self.calculate_checksum(src_addr, dst_addr));
+            packet.payload_mut()[..self.payload.len()].copy_from_slice(self.payload);
+        }
+
+        fn calculate_checksum(&self, src_addr: &Address, dst_addr: &Address) -> u16 {
+            let mut checksum = 0u32;
+
+            for c in src_addr
+                .as_bytes()
+                .chunks_exact(2)
+                .chain(dst_addr.as_bytes().chunks_exact(2))
+            {
+                checksum += NetworkEndian::read_u16(c) as u32;
+            }
+
+            let udp_len: u32 = self.payload.len() as u32 + 8;
+            checksum += udp_len >> 16;
+            checksum += udp_len & 0xffff;
+
+            checksum += 17; // next header
+
+            checksum += self.src_port as u32;
+            checksum += self.dst_port as u32;
+
+            checksum += udp_len >> 16;
+            checksum += udp_len & 0xffff;
+
+            for c in self.payload.chunks(2) {
+                if c.len() == 2 {
+                    checksum += NetworkEndian::read_u16(c) as u32;
+                } else {
+                    checksum += (c[0] as u32) << 8;
+                }
+            }
+
+            while checksum >> 16 != 0 {
+                checksum = (checksum & 0xffff) + (checksum >> 16);
+            }
+
+            checksum as u16
         }
     }
 

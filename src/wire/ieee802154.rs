@@ -657,7 +657,7 @@ impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
 
 /// A high-level representation of an IEEE802.15.4 frame.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Repr<'a> {
+pub struct Repr {
     pub frame_type: FrameType,
     pub security_enabled: bool,
     pub frame_pending: bool,
@@ -669,12 +669,11 @@ pub struct Repr<'a> {
     pub dst_addr: Option<Address>,
     pub src_pan_id: Option<Pan>,
     pub src_addr: Option<Address>,
-    pub payload: Option<&'a [u8]>,
 }
 
-impl<'a> Repr<'a> {
+impl Repr {
     /// Parse an IEEE 802.15.4 frame and return a high-level representation.
-    pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Frame<&'a T>) -> Result<Repr<'a>> {
+    pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Frame<&T>) -> Result<Repr> {
         // Ensure the basic accessors will work.
         packet.check_len()?;
 
@@ -690,7 +689,6 @@ impl<'a> Repr<'a> {
             dst_addr: packet.dst_addr(),
             src_pan_id: packet.src_pan_id(),
             src_addr: packet.src_addr(),
-            payload: packet.payload(),
         })
     }
 
@@ -709,8 +707,8 @@ impl<'a> Repr<'a> {
                 Some(Address::Short(_)) => 2,
                 Some(Address::Extended(_)) => 8,
             }
-            + self.payload.as_ref().unwrap().len() // XXX
-            + 2
+            //+ self.payload.as_ref().unwrap().len() // XXX
+            //+ 2
     }
 
     /// Emit a high-level representation into an IEEE802.15.4 frame.
@@ -752,12 +750,6 @@ impl<'a> Repr<'a> {
         if let Some(src_addr) = self.src_addr {
             frame.set_src_addr(src_addr);
         }
-
-        let offset = 3 + frame.addressing_fields().unwrap().len();
-        let payload_len = self.payload.as_ref().unwrap().len(); // XXX
-
-        frame.buffer.as_mut()[offset..offset + payload_len]
-            .copy_from_slice(self.payload.as_ref().unwrap()); // XXX
     }
 }
 

@@ -38,6 +38,8 @@ struct InterfaceInner<'a> {
     ethernet_addr:          Option<EthernetAddress>,
     #[cfg(feature = "medium-sixlowpan")]
     ieee802154_addr:        Option<Ieee802154Address>,
+    #[cfg(feature = "medium-sixlowpan")]
+    sequence_no:            u8,
     ip_addrs:               ManagedSlice<'a, IpCidr>,
     #[cfg(feature = "proto-ipv4")]
     any_ip:                 bool,
@@ -59,6 +61,8 @@ pub struct InterfaceBuilder <'a, DeviceT: for<'d> Device<'d>> {
     neighbor_cache:         Option<NeighborCache<'a>>,
     #[cfg(feature = "medium-sixlowpan")]
     ieee802154_addr:        Option<Ieee802154Address>,
+    #[cfg(feature = "medium-sixlowpan")]
+    sequence_no:            u8,
     ip_addrs:               ManagedSlice<'a, IpCidr>,
     #[cfg(feature = "proto-ipv4")]
     any_ip:                 bool,
@@ -105,6 +109,8 @@ let iface = InterfaceBuilder::new(device)
             neighbor_cache:      None,
             #[cfg(feature = "medium-sixlowpan")]
             ieee802154_addr:     None,
+            #[cfg(feature = "medium-sixlowpan")]
+            sequence_no:         1,
             ip_addrs:            ManagedSlice::Borrowed(&mut []),
             #[cfg(feature = "proto-ipv4")]
             any_ip:              false,
@@ -125,6 +131,13 @@ let iface = InterfaceBuilder::new(device)
     pub fn ethernet_addr(mut self, addr: EthernetAddress) -> Self {
         InterfaceInner::check_ethernet_addr(&addr);
         self.ethernet_addr = Some(addr);
+        self
+    }
+
+    /// Set the IEEE802.15.4 address the interface will use.
+    #[cfg(feature = "medium-sixlowpan")]
+    pub fn ieee802154_addr(mut self, addr: Ieee802154Address) -> Self {
+        self.ieee802154_addr = Some(addr);
         self
     }
 
@@ -239,6 +252,8 @@ let iface = InterfaceBuilder::new(device)
                 ethernet_addr,
                 #[cfg(feature = "medium-sixlowpan")]
                 ieee802154_addr: self.ieee802154_addr,
+                #[cfg(feature = "medium-sixlowpan")]
+                sequence_no: self.sequence_no,
                 ip_addrs: self.ip_addrs,
                 #[cfg(feature = "proto-ipv4")]
                 any_ip: self.any_ip,
@@ -951,7 +966,7 @@ impl<'a> InterfaceInner<'a> {
         let ieee802154_frame = Ieee802154Frame::new_checked(sixlowpan_payload)?;
         let ieee802154_repr = Ieee802154Repr::parse(&ieee802154_frame)?;
 
-        match ieee802154_repr.payload {
+        match ieee802154_frame.payload() {
             Some(payload) => {
                 // The first header needs to be an IPHC header.
                 let iphc_packet = SixlowpanIphcPacket::new_checked(payload)?;
@@ -1863,8 +1878,84 @@ impl<'a> InterfaceInner<'a> {
             }
             #[cfg(feature = "medium-sixlowpan")]
             Medium::Sixlowpan => {
-                // Conver the packet to a LOWPAN compatible packet.
-                todo!();
+                // 1. Create IEEE 802.15.4 frame
+                // 2. Create 6LoWPAN frame (with the IPHC compression first).
+                // 3. Create the UDP frame (with the NHC compression).
+                
+                let mut tx_len = 0;
+                
+                let ieee_repr = Ieee802154Repr {
+                    frame_type: Ieee802154FrameType::Data,
+                    security_enabled: false,
+                    frame_pending: false,
+                    ack_request: false,
+                    sequence_number: Some(self.sequence_no),
+                    pan_id_compression: false,
+                    frame_version: Ieee802154FrameVersion::Ieee802154_2006,
+                    dst_pan_id: Some(Ieee802154Pan(0xabcd)),
+                    dst_addr: Some(Ieee802154Address::BROADCAST),
+                    src_pan_id: Some(Ieee802154Pan(0xabcd)),
+                    src_addr: self.ieee802154_addr,
+                };
+
+                self.sequence_no += 1;
+
+                let src_addr = match ip_repr.src_addr() {
+                    IpAddress::Ipv6(addr) => addr,
+                    _ => unreachable!(),
+                };
+
+                let dst_addr = match ip_repr.dst_addr() {
+                    IpAddress::Ipv6(addr) => addr,
+                    _ => unreachable!(),
+                };
+
+                let iphc_repr = SixlowpanIphcRepr  {
+                    src_addr,
+                    ll_src_addr: self.ieee802154_addr,
+                    dst_addr,
+                    ll_dst_addr: Some(Ieee802154Address::BROADCAST),
+                    next_header: SixlowpanNextHeader::Compressed,
+                    hop_limit: 64,
+                };
+
+
+                tx_len += ieee_repr.buffer_len();
+                tx_len += iphc_repr.buffer_len();
+                
+                match &packet {
+                    IpPacket::Udp((_, udp_repr)) => {
+                        let udp_repr = SixlowpanUdpRepr(*udp_repr);
+                        tx_len += udp_repr.buffer_len();
+                    }
+                    _ => todo!(),
+                }
+
+
+                tx_token.consume(timestamp, tx_len, |mut tx_buffer| {
+                    let mut ieee_packet = Ieee802154Frame::new_unchecked(&mut tx_buffer);
+                    ieee_repr.emit(&mut ieee_packet);
+
+                    let start = ieee_repr.buffer_len();
+
+                    let mut iphc_packet = SixlowpanIphcPacket::new_unchecked(&mut tx_buffer[start..]);
+
+                    iphc_repr.emit(&mut iphc_packet);
+
+                    let start = start + iphc_repr.buffer_len();
+
+                    match packet {
+                        IpPacket::Udp((_, udp_repr)) => {
+                            let udp_repr = SixlowpanUdpRepr(udp_repr);
+                            let mut udp_packet = SixlowpanUdpPacket::new_unchecked(&mut tx_buffer[start..]);
+
+                            udp_repr.emit(&mut udp_packet, &iphc_repr.src_addr, &iphc_repr.dst_addr);
+
+                            Ok(())
+                        }
+                        _ => todo!(),
+                    }
+                })
             }
         }
     }
