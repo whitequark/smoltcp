@@ -247,6 +247,13 @@ pub enum Medium {
     /// Examples of devices of this type are the Linux `tun`, PPP interfaces, VPNs in tun (layer 3) mode.
     #[cfg(feature = "medium-ip")]
     Ip,
+
+    /// 6LoWPAN medium. Devices of this type send and receive IPv6 frames encoded using 6LoWPAN.
+    /// They are transmitted over IEEE802.15.4 or BLE.
+    ///
+    /// Examples of devices of this type are found in the Internet of Things realm.
+    #[cfg(feature = "medium-sixlowpan")]
+    Sixlowpan,
 }
 
 
@@ -256,6 +263,8 @@ impl Default for Medium {
         return Medium::Ethernet;
         #[cfg(all(feature = "medium-ip", not(feature = "medium-ethernet")))]
         return Medium::Ip;
+        #[cfg(feature = "medium-sixlowpan")]
+        return Medium::Sixlowpan;
         #[cfg(all(not(feature = "medium-ip"), not(feature = "medium-ethernet")))]
         panic!("No medium enabled");
     }

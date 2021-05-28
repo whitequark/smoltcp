@@ -138,6 +138,8 @@ impl<D: for<'a> Device<'a>, S: PcapSink + Clone> PcapWriter<D, S> {
             Medium::Ip => PcapLinkType::Ip,
             #[cfg(feature = "medium-ethernet")]
             Medium::Ethernet => PcapLinkType::Ethernet,
+            #[cfg(feature = "medium-sixlowpan")]
+            Medium::Sixlowpan => todo!(),
         };
         sink.global_header(link_type);
         PcapWriter { lower, sink, mode }

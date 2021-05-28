@@ -81,6 +81,10 @@ pub mod pretty_print;
 mod ethernet;
 #[cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 mod arp;
+#[cfg(feature = "ieee802154")]
+mod ieee802154;
+#[cfg(feature = "sixlowpan")]
+mod sixlowpan;
 pub(crate) mod ip;
 #[cfg(feature = "proto-ipv4")]
 mod ipv4;
@@ -127,6 +131,26 @@ pub use self::arp::{Hardware as ArpHardware,
                     Operation as ArpOperation,
                     Packet as ArpPacket,
                     Repr as ArpRepr};
+
+#[cfg(feature = "sixlowpan")]
+pub use self::sixlowpan::{iphc::{Packet as SixlowpanIphcPacket,
+                                 Repr as SixlowpanIphcRepr},
+                          nhc::{Packet as SixlowpanNhcPacket,
+                                ExtensionHeaderPacket as SixlowpanExtHeaderPacket,
+                                ExtensionHeaderRepr as SixlowpanExtHeaderRepr,
+                                UdpPacket as SixlowpanUdpPacket,
+                                UdpNhcRepr as SixlowpanUdpRepr},
+                          NextHeader as SixlowpanNextHeader,};
+                    
+
+#[cfg(feature = "ieee802154")]
+pub use self::ieee802154::{Address as Ieee802154Address,
+                           Pan as Ieee802154Pan,
+                           Frame as Ieee802154Frame,
+                           FrameType as Ieee802154FrameType,
+                           FrameVersion as Ieee802154FrameVersion,
+                           AddressingMode as Ieee802154AddressingMode,
+                           Repr as Ieee802154Repr};
 
 pub use self::ip::{Version as IpVersion,
                    Protocol as IpProtocol,
@@ -223,3 +247,57 @@ pub use self::tcp::{SeqNumber as TcpSeqNumber,
 pub use self::dhcpv4::{Packet as DhcpPacket,
                        Repr as DhcpRepr,
                        MessageType as DhcpMessageType};
+
+/// Representation of an hardware address, such as an Ethernet address or an IEEE802.15.4 address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareAddress {
+    BROADCAST,
+    #[cfg(feature = "medium-ethernet")]
+    Ethernet(EthernetAddress),
+    #[cfg(feature = "medium-sixlowpan")]
+    Ieee802154(Ieee802154Address),
+}
+
+impl HardwareAddress {
+    /// Query wether the address is an unicast address.
+    pub fn is_unicast(&self) -> bool {
+        match self {
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => addr.is_unicast(),
+            #[cfg(feature = "medium-sixlowpan")]
+            HardwareAddress::Ieee802154(addr) => addr.is_unicast(),
+            _ => todo!(),
+        }
+    }
+
+    /// Query wether the address is a broadcast address.
+    pub fn is_broadcast(&self) -> bool {
+        match self {
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => addr.is_broadcast(),
+            #[cfg(feature = "medium-sixlowpan")]
+            HardwareAddress::Ieee802154(addr) => addr.is_broadcast(),
+            _ => todo!(),
+        }
+    }
+}
+
+impl core::fmt::Display for HardwareAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+#[cfg(feature = "medium-ethernet")]
+impl From<EthernetAddress> for HardwareAddress {
+    fn from(addr: EthernetAddress) -> Self {
+        HardwareAddress::Ethernet(addr)
+    }
+}
+
+#[cfg(feature = "medium-sixlowpan")]
+impl From<Ieee802154Address> for HardwareAddress {
+    fn from(addr: Ieee802154Address) -> Self {
+        HardwareAddress::Ieee802154(addr)
+    }
+}
