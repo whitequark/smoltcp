@@ -10,7 +10,7 @@ use crate::phy::{Device, DeviceCapabilities, RxToken, TxToken, Medium};
 use crate::time::{Duration, Instant};
 use crate::wire::*;
 use crate::socket::*;
-#[cfg(feature = "medium-ethernet")]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
 use crate::iface::{NeighborCache, NeighborAnswer};
 use crate::iface::Routes;
 
@@ -32,7 +32,7 @@ pub struct Interface<'a, DeviceT: for<'d> Device<'d>> {
 /// methods on the `Interface` in this time (since its `device` field is borrowed
 /// exclusively). However, it is still possible to call methods on its `inner` field.
 struct InterfaceInner<'a> {
-    #[cfg(feature = "medium-ethernet")]
+    #[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
     neighbor_cache:         Option<NeighborCache<'a>>,
     #[cfg(feature = "medium-ethernet")]
     ethernet_addr:          Option<EthernetAddress>,
@@ -57,7 +57,7 @@ pub struct InterfaceBuilder <'a, DeviceT: for<'d> Device<'d>> {
     device:                 DeviceT,
     #[cfg(feature = "medium-ethernet")]
     ethernet_addr:          Option<EthernetAddress>,
-    #[cfg(feature = "medium-ethernet")]
+    #[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
     neighbor_cache:         Option<NeighborCache<'a>>,
     #[cfg(feature = "medium-sixlowpan")]
     ieee802154_addr:        Option<Ieee802154Address>,
@@ -105,7 +105,7 @@ let iface = InterfaceBuilder::new(device)
             device:              device,
             #[cfg(feature = "medium-ethernet")]
             ethernet_addr:       None,
-            #[cfg(feature = "medium-ethernet")]
+            #[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
             neighbor_cache:      None,
             #[cfg(feature = "medium-sixlowpan")]
             ieee802154_addr:     None,
@@ -206,7 +206,7 @@ let iface = InterfaceBuilder::new(device)
     }
 
     /// Set the Neighbor Cache the interface will use.
-    #[cfg(feature = "medium-ethernet")]
+    #[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
     pub fn neighbor_cache(mut self, neighbor_cache: NeighborCache<'a>) -> Self {
         self.neighbor_cache = Some(neighbor_cache);
         self
@@ -226,8 +226,8 @@ let iface = InterfaceBuilder::new(device)
     pub fn finalize(self) -> Interface<'a, DeviceT> {
         let device_capabilities = self.device.capabilities();
 
-        #[cfg(feature = "medium-ethernet")]
-        let (ethernet_addr, neighbor_cache) = match device_capabilities.medium {
+        let (hardware_addr, neighbor_cache) = match device_capabilities.medium {
+            #[cfg(feature = "medium-ethernet")]
             Medium::Ethernet => (
                 Some(self.ethernet_addr.expect("ethernet_addr required option was not set")),
                 Some(self.neighbor_cache.expect("neighbor_cache required option was not set"))
@@ -239,19 +239,19 @@ let iface = InterfaceBuilder::new(device)
                 (None, None)
             }
             #[cfg(feature = "medium-sixlowpan")]
-            Medium::Sixlowpan => {
-                assert!(self.ieee802154_addr.is_some(), "ieee802154_addr required option was not set");
-                (None, None)
-            }
+            Medium::Sixlowpan => (
+                Some(self.ieee802154_addr.expect("ieee802154_addr required option was not set")),
+                Some(self.neighbor_cache.expect("neighbor_cache required option was not set")),
+            ),
         };
 
         Interface {
             device: self.device,
             inner: InterfaceInner {
                 #[cfg(feature = "medium-ethernet")]
-                ethernet_addr,
+                ethernet_addr: hardware_addr,
                 #[cfg(feature = "medium-sixlowpan")]
-                ieee802154_addr: self.ieee802154_addr,
+                ieee802154_addr: hardware_addr,
                 #[cfg(feature = "medium-sixlowpan")]
                 sequence_no: self.sequence_no,
                 ip_addrs: self.ip_addrs,
@@ -259,7 +259,7 @@ let iface = InterfaceBuilder::new(device)
                 any_ip: self.any_ip,
                 routes: self.routes,
                 device_capabilities,
-                #[cfg(feature = "medium-ethernet")]
+                #[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
                 neighbor_cache,
                 #[cfg(feature = "proto-igmp")]
                 ipv4_multicast_groups: self.ipv4_multicast_groups,
@@ -911,7 +911,7 @@ impl<'a> InterfaceInner<'a> {
                     // Fill the neighbor cache from IP header of unicast frames.
                     let ip_addr = IpAddress::Ipv4(ipv4_packet.src_addr());
                     if self.in_same_network(&ip_addr) {
-                        self.neighbor_cache.as_mut().unwrap().fill(ip_addr, eth_frame.src_addr(), timestamp);
+                        self.neighbor_cache.as_mut().unwrap().fill(ip_addr, eth_frame.src_addr().into(), timestamp);
                     }
                 }
 
@@ -925,7 +925,7 @@ impl<'a> InterfaceInner<'a> {
                     let ip_addr = IpAddress::Ipv6(ipv6_packet.src_addr());
                     if self.in_same_network(&ip_addr) &&
                             self.neighbor_cache.as_mut().unwrap().lookup(&ip_addr, timestamp).found() {
-                        self.neighbor_cache.as_mut().unwrap().fill(ip_addr, eth_frame.src_addr(), timestamp);
+                        self.neighbor_cache.as_mut().unwrap().fill(ip_addr, eth_frame.src_addr().into(), timestamp);
                     }
                 }
         
@@ -1049,7 +1049,7 @@ impl<'a> InterfaceInner<'a> {
             } => {
                 if source_protocol_addr.is_unicast() && source_hardware_addr.is_unicast() {
                     self.neighbor_cache.as_mut().unwrap().fill(source_protocol_addr.into(),
-                                             source_hardware_addr,
+                                             source_hardware_addr.into(),
                                              timestamp);
                 } else {
                     // Discard packets with non-unicast source addresses.
@@ -1377,7 +1377,7 @@ impl<'a> InterfaceInner<'a> {
                     Some(lladdr) if lladdr.is_unicast() && target_addr.is_unicast() => {
                         if flags.contains(NdiscNeighborFlags::OVERRIDE) ||
                                 !self.neighbor_cache.as_mut().unwrap().lookup(&ip_addr, timestamp).found() {
-                            self.neighbor_cache.as_mut().unwrap().fill(ip_addr, lladdr, timestamp)
+                            self.neighbor_cache.as_mut().unwrap().fill(ip_addr, lladdr.into(), timestamp)
                         }
                     },
                     _ => (),
@@ -1387,7 +1387,7 @@ impl<'a> InterfaceInner<'a> {
             NdiscRepr::NeighborSolicit { target_addr, lladdr, .. } => {
                 match lladdr {
                     Some(lladdr) if lladdr.is_unicast() && target_addr.is_unicast() => {
-                        self.neighbor_cache.as_mut().unwrap().fill(ip_repr.src_addr.into(), lladdr, timestamp)
+                        self.neighbor_cache.as_mut().unwrap().fill(ip_repr.src_addr.into(), lladdr.into(), timestamp)
                     },
                     _ => (),
                 }
@@ -1742,7 +1742,7 @@ impl<'a> InterfaceInner<'a> {
     #[cfg(feature = "medium-ethernet")]
     fn lookup_hardware_addr<Tx>(&mut self, tx_token: Tx, timestamp: Instant,
                                 src_addr: &IpAddress, dst_addr: &IpAddress) ->
-                               Result<(EthernetAddress, Tx)>
+                               Result<(HardwareAddress, Tx)>
         where Tx: TxToken
     {
         if dst_addr.is_multicast() {
@@ -1767,7 +1767,7 @@ impl<'a> InterfaceInner<'a> {
                         ])),
                 };
             if let Some(hardware_addr) = hardware_addr {
-                return Ok((hardware_addr, tx_token))
+                return Ok((hardware_addr.into(), tx_token))
             }
         }
 
@@ -1847,7 +1847,10 @@ impl<'a> InterfaceInner<'a> {
                                             &ip_repr.src_addr(), &ip_repr.dst_addr())?;
 
                 self.dispatch_ethernet(tx_token, timestamp, ip_repr.total_len(), |mut frame| {
-                    frame.set_dst_addr(dst_hardware_addr);
+                    match dst_hardware_addr {
+                        HardwareAddress::Ethernet(addr) => frame.set_dst_addr(addr),
+                        _ => unreachable!(),
+                    }
                     match ip_repr {
                         #[cfg(feature = "proto-ipv4")]
                         IpRepr::Ipv4(_) => frame.set_ethertype(EthernetProtocol::Ipv4),
@@ -1882,18 +1885,26 @@ impl<'a> InterfaceInner<'a> {
                 // 2. Create 6LoWPAN frame (with the IPHC compression first).
                 // 3. Create the UDP frame (with the NHC compression).
                 
+                // Get the hardware dst address from the neighbor cache
+                let dst_addr = match self.neighbor_cache.as_mut().unwrap().lookup(&ip_repr.dst_addr(), timestamp) {
+                    NeighborAnswer::Found(HardwareAddress::Ieee802154(addr)) => addr,
+                    _ => todo!(),
+                };
+
+                let ack_request = dst_addr.is_unicast();
+
                 let mut tx_len = 0;
                 
                 let ieee_repr = Ieee802154Repr {
                     frame_type: Ieee802154FrameType::Data,
                     security_enabled: false,
                     frame_pending: false,
-                    ack_request: false,
+                    ack_request,
                     sequence_number: Some(self.sequence_no),
                     pan_id_compression: false,
                     frame_version: Ieee802154FrameVersion::Ieee802154_2006,
                     dst_pan_id: Some(Ieee802154Pan(0xabcd)),
-                    dst_addr: Some(Ieee802154Address::BROADCAST),
+                    dst_addr: Some(dst_addr),
                     src_pan_id: Some(Ieee802154Pan(0xabcd)),
                     src_addr: self.ieee802154_addr,
                 };
@@ -2591,7 +2602,7 @@ mod test {
         // Ensure the address of the requestor was entered in the cache
         assert_eq!(iface.inner.lookup_hardware_addr(MockTxToken, Instant::from_secs(0),
             &IpAddress::Ipv4(local_ip_addr), &IpAddress::Ipv4(remote_ip_addr)),
-            Ok((remote_hw_addr, MockTxToken)));
+            Ok((remote_hw_addr.into(), MockTxToken)));
     }
 
     #[test]
@@ -2651,7 +2662,7 @@ mod test {
         // Ensure the address of the requestor was entered in the cache
         assert_eq!(iface.inner.lookup_hardware_addr(MockTxToken, Instant::from_secs(0),
             &IpAddress::Ipv6(local_ip_addr), &IpAddress::Ipv6(remote_ip_addr)),
-            Ok((remote_hw_addr, MockTxToken)));
+            Ok((remote_hw_addr.into(), MockTxToken)));
     }
 
     #[test]
@@ -2689,7 +2700,7 @@ mod test {
         assert_eq!(iface.inner.lookup_hardware_addr(MockTxToken, Instant::from_secs(0),
             &IpAddress::Ipv4(Ipv4Address([0x7f, 0x00, 0x00, 0x01])),
             &IpAddress::Ipv4(remote_ip_addr)),
-            Ok((remote_hw_addr, MockTxToken)));
+            Ok((remote_hw_addr.into(), MockTxToken)));
     }
 
     #[test]

@@ -607,7 +607,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
             Address::Extended(ref value) => {
                 self.set_src_addressing_mode(AddressingMode::Extended);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
-                data[offset..offset + 8].copy_from_slice(value);
+                let mut val = value.clone();
+                val.reverse();
+                data[offset..offset + 8].copy_from_slice(&val[..]);
             }
         }
     }

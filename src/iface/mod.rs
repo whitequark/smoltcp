@@ -4,17 +4,17 @@ The `iface` module deals with the *network interfaces*. It filters incoming fram
 provides lookup and caching of hardware addresses, and handles management packets.
 */
 
-#[cfg(feature = "medium-ethernet")]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
 mod neighbor;
 mod route;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ip", feature = "medium-sixlowpan"))]
 mod interface;
 
-#[cfg(feature = "medium-ethernet")]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
 pub use self::neighbor::Neighbor as Neighbor;
-#[cfg(feature = "medium-ethernet")]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
 pub(crate) use self::neighbor::Answer as NeighborAnswer;
-#[cfg(feature = "medium-ethernet")]
+#[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
 pub use self::neighbor::Cache as NeighborCache;
 pub use self::route::{Route, Routes};
 

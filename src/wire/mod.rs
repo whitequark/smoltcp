@@ -247,3 +247,57 @@ pub use self::tcp::{SeqNumber as TcpSeqNumber,
 pub use self::dhcpv4::{Packet as DhcpPacket,
                        Repr as DhcpRepr,
                        MessageType as DhcpMessageType};
+
+/// Representation of an hardware address, such as an Ethernet address or an IEEE802.15.4 address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareAddress {
+    BROADCAST,
+    #[cfg(feature = "medium-ethernet")]
+    Ethernet(EthernetAddress),
+    #[cfg(feature = "medium-sixlowpan")]
+    Ieee802154(Ieee802154Address),
+}
+
+impl HardwareAddress {
+    /// Query wether the address is an unicast address.
+    pub fn is_unicast(&self) -> bool {
+        match self {
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => addr.is_unicast(),
+            #[cfg(feature = "medium-sixlowpan")]
+            HardwareAddress::Ieee802154(addr) => addr.is_unicast(),
+            _ => todo!(),
+        }
+    }
+
+    /// Query wether the address is a broadcast address.
+    pub fn is_broadcast(&self) -> bool {
+        match self {
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => addr.is_broadcast(),
+            #[cfg(feature = "medium-sixlowpan")]
+            HardwareAddress::Ieee802154(addr) => addr.is_broadcast(),
+            _ => todo!(),
+        }
+    }
+}
+
+impl core::fmt::Display for HardwareAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+#[cfg(feature = "medium-ethernet")]
+impl From<EthernetAddress> for HardwareAddress {
+    fn from(addr: EthernetAddress) -> Self {
+        HardwareAddress::Ethernet(addr)
+    }
+}
+
+#[cfg(feature = "medium-sixlowpan")]
+impl From<Ieee802154Address> for HardwareAddress {
+    fn from(addr: Ieee802154Address) -> Self {
+        HardwareAddress::Ieee802154(addr)
+    }
+}
