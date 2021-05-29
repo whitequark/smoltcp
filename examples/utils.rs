@@ -93,11 +93,6 @@ pub fn parse_tuntap_options(matches: &mut Matches) -> TunTapInterface {
     }
 }
 
-pub fn parse_raw_socket_options(matches: &mut Matches) -> RawSocket {
-    let interface = matches.free.remove(0);
-    RawSocket::new(&interface).unwrap()
-}
-
 pub fn add_middleware_options(opts: &mut Options, _free: &mut Vec<&str>) {
     opts.optopt("", "pcap", "Write a packet capture file", "FILE");
     opts.optopt("", "drop-chance", "Chance of dropping a packet (%)", "CHANCE");

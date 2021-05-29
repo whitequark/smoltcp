@@ -12,7 +12,8 @@ use crate::time::Instant;
 #[derive(Debug)]
 pub struct RawSocket {
     lower:  Rc<RefCell<sys::RawSocketDesc>>,
-    mtu:    usize
+    mtu:    usize,
+    medium: Medium,
 }
 
 impl AsRawFd for RawSocket {
@@ -26,13 +27,23 @@ impl RawSocket {
     ///
     /// This requires superuser privileges or a corresponding capability bit
     /// set on the executable.
-    pub fn new(name: &str) -> io::Result<RawSocket> {
+    pub fn new(name: &str, medium: Medium) -> io::Result<RawSocket> {
         let mut lower = sys::RawSocketDesc::new(name)?;
         lower.bind_interface()?;
-        let mtu = lower.interface_mtu()?;
+
+        let mut mtu = lower.interface_mtu()?;
+
+        #[cfg(feature = "medium-ethernet")]
+        if medium == Medium::Ethernet {
+            // SIOCGIFMTU returns the IP MTU (typically 1500 bytes.)
+            // smoltcp counts the entire Ethernet packet in the MTU, so add the Ethernet header size to it.
+            mtu += crate::wire::EthernetFrame::<&[u8]>::header_len()
+        }
+
         Ok(RawSocket {
             lower: Rc::new(RefCell::new(lower)),
-            mtu:   mtu
+            mtu,
+            medium,
         })
     }
 }
@@ -44,7 +55,7 @@ impl<'a> Device<'a> for RawSocket {
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
             max_transmission_unit: self.mtu,
-            medium: Medium::Ethernet,
+            medium: self.medium,
             ..DeviceCapabilities::default()
         }
     }

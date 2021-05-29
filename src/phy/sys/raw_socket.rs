@@ -1,7 +1,6 @@
 use std::{mem, io};
 use std::os::unix::io::{RawFd, AsRawFd};
 use super::*;
-use crate::wire::EthernetFrame;
 
 #[derive(Debug)]
 pub struct RawSocketDesc {
@@ -31,10 +30,7 @@ impl RawSocketDesc {
     }
 
     pub fn interface_mtu(&mut self) -> io::Result<usize> {
-        // SIOCGIFMTU returns the IP MTU (typically 1500 bytes.)
-        // smoltcp counts the entire Ethernet packet in the MTU, so add the Ethernet header size to it.
-        let ip_mtu = ifreq_ioctl(self.lower, &mut self.ifreq, imp::SIOCGIFMTU).map(|mtu| mtu as usize)?;
-        Ok(ip_mtu + EthernetFrame::<&[u8]>::header_len())
+        ifreq_ioctl(self.lower, &mut self.ifreq, imp::SIOCGIFMTU).map(|mtu| mtu as usize)
     }
 
     pub fn bind_interface(&mut self) -> io::Result<()> {
