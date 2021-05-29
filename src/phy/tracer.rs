@@ -136,7 +136,7 @@ impl<'a> fmt::Display for Packet<'a> {
                 _ => f.write_str("unrecognized IP version")
             }
             #[cfg(feature = "medium-sixlowpan")]
-            Medium::Sixlowpan => todo!(),
+            Medium::Sixlowpan => Ok(()),
         }
     }
 }

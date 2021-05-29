@@ -16,6 +16,8 @@ enum_with_unknown! {
         Ethernet =   1,
         /// IPv4 or IPv6 packets (depending on the version field)
         Ip       = 101,
+        /// IEEE 802.15.4 packets with FCS included.
+        Ieee802154WithFcs = 195,
     }
 }
 
@@ -139,7 +141,7 @@ impl<D: for<'a> Device<'a>, S: PcapSink + Clone> PcapWriter<D, S> {
             #[cfg(feature = "medium-ethernet")]
             Medium::Ethernet => PcapLinkType::Ethernet,
             #[cfg(feature = "medium-sixlowpan")]
-            Medium::Sixlowpan => todo!(),
+            Medium::Sixlowpan => PcapLinkType::Ieee802154WithFcs,
         };
         sink.global_header(link_type);
         PcapWriter { lower, sink, mode }

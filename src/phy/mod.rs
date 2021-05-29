@@ -263,7 +263,7 @@ impl Default for Medium {
         return Medium::Ethernet;
         #[cfg(all(feature = "medium-ip", not(feature = "medium-ethernet")))]
         return Medium::Ip;
-        #[cfg(feature = "medium-sixlowpan")]
+        #[cfg(all(feature = "medium-sixlowpan", not(feature = "medium-ip"), not(feature = "medium-ethernet")))]
         return Medium::Sixlowpan;
         #[cfg(all(not(feature = "medium-ip"), not(feature = "medium-ethernet")))]
         panic!("No medium enabled");

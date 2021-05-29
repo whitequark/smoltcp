@@ -36,7 +36,7 @@ verbose = []
 "medium-ethernet" = ["socket"]
 "medium-ip" = ["socket"]
 "medium-sixlowpan" = ["socket", "sixlowpan", "proto-sixlowpan"]
-"phy-raw_socket" = ["std", "libc", "medium-ethernet"]
+"phy-raw_socket" = ["std", "libc", "medium-sixlowpan"]
 "phy-tuntap_interface" = ["std", "libc", "medium-ethernet"]
 "ieee802154" = []
 "sixlowpan" = ["ieee802154"]
@@ -60,7 +60,7 @@ defmt-error = []
 
 default = [
   "std", "log", # needed for `cargo test --no-default-features --features default` :/
-  "medium-ethernet", "medium-ip",
+  "medium-ethernet", "medium-ip", "medium-sixlowpan",
   "phy-raw_socket", "phy-tuntap_interface",
   "proto-ipv4", "proto-igmp", "proto-dhcpv4", "proto-ipv6",
   "socket-raw", "socket-icmp", "socket-udp", "socket-tcp",
@@ -110,6 +110,10 @@ required-features = ["std", "medium-ethernet", "medium-ip", "phy-tuntap_interfac
 [[example]]
 name = "dhcp_client"
 required-features = ["std", "medium-ethernet", "medium-ip", "phy-tuntap_interface", "proto-ipv4", "proto-dhcpv4", "socket-raw"]
+
+[[example]]
+name = "sixlowpan"
+required-features = ["std", "medium-sixlowpan", "phy-raw_socket", "proto-ipv6", "socket-udp"]
 
 [profile.release]
 debug = 2
