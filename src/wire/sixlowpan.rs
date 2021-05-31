@@ -766,7 +766,7 @@ pub mod iphc {
             }
 
             let src_addr = packet.src_addr().resolve(ll_src_addr);
-            let dst_addr = packet.src_addr().resolve(ll_dst_addr);
+            let dst_addr = packet.dst_addr().resolve(ll_dst_addr);
 
             Ok(Repr {
                 src_addr,

@@ -363,15 +363,15 @@ impl<T: AsRef<[u8]>> Frame<T> {
         match self.dst_addressing_mode() {
             AddressingMode::Absent => Some(Address::Absent),
             AddressingMode::Short => {
-                // XXX not sure if the endianness is correctly handled
                 let mut raw = [0u8; 2];
                 raw.clone_from_slice(&addressing_fields[2..4]);
+                raw.reverse();
                 Some(Address::short_from_bytes(raw))
             }
             AddressingMode::Extended => {
-                // XXX not sure if the endianness is correctly handled
                 let mut raw = [0u8; 8];
                 raw.clone_from_slice(&addressing_fields[2..10]);
+                raw.reverse();
                 Some(Address::extended_from_bytes(raw))
             }
             AddressingMode::Unknown(_) => None,
@@ -415,15 +415,15 @@ impl<T: AsRef<[u8]>> Frame<T> {
         match self.src_addressing_mode() {
             AddressingMode::Absent => Some(Address::Absent),
             AddressingMode::Short => {
-                // XXX not sure if the endianness is correctly handled
                 let mut raw = [0u8; 2];
                 raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
+                raw.reverse();
                 Some(Address::short_from_bytes(raw))
             }
             AddressingMode::Extended => {
-                // XXX not sure if the endianness is correctly handled
                 let mut raw = [0u8; 8];
                 raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
+                raw.reverse();
                 Some(Address::extended_from_bytes(raw))
             }
             AddressingMode::Unknown(_) => None,
@@ -545,17 +545,19 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
 
     /// Set the destination address.
     #[inline]
-    pub fn set_dst_addr(&mut self, value: Address) {
+    pub fn set_dst_addr(&mut self, mut value: Address) {
         match value {
             Address::Absent => self.set_dst_addressing_mode(AddressingMode::Absent),
-            Address::Short(ref value) => {
+            Address::Short(ref mut value) => {
                 self.set_dst_addressing_mode(AddressingMode::Short);
                 let data = self.buffer.as_mut();
+                value.reverse();
                 data[field::ADDRESSING][2..2 + 2].copy_from_slice(value);
             }
-            Address::Extended(ref value) => {
+            Address::Extended(ref mut value) => {
                 self.set_dst_addressing_mode(AddressingMode::Extended);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
+                value.reverse();
                 data[2..2 + 8].copy_from_slice(value);
             }
         }
@@ -587,7 +589,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
 
     /// Set the source address.
     #[inline]
-    pub fn set_src_addr(&mut self, value: Address) {
+    pub fn set_src_addr(&mut self, mut value: Address) {
         let offset = match self.dst_addressing_mode() {
             AddressingMode::Absent => todo!("{}", self.dst_addressing_mode()),
             AddressingMode::Short => 2,
@@ -599,17 +601,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
 
         match value {
             Address::Absent => self.set_src_addressing_mode(AddressingMode::Absent),
-            Address::Short(ref value) => {
+            Address::Short(ref mut value) => {
                 self.set_src_addressing_mode(AddressingMode::Short);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
+                value.reverse();
                 data[offset..offset + 2].copy_from_slice(value);
             }
-            Address::Extended(ref value) => {
+            Address::Extended(ref mut value) => {
                 self.set_src_addressing_mode(AddressingMode::Extended);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
-                let mut val = value.clone();
-                val.reverse();
-                data[offset..offset + 8].copy_from_slice(&val[..]);
+                value.reverse();
+                data[offset..offset + 8].copy_from_slice(value);
             }
         }
     }
