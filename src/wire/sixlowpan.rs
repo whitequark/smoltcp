@@ -780,7 +780,17 @@ pub mod iphc {
 
         /// Return the length of a header that will be emitted from this high-level representation.
         pub fn buffer_len(&self) -> usize {
-            2 + if self.src_addr == ipv6::Address::UNSPECIFIED {
+            let mut len = 0;
+            len += 2; // The minimal header length
+
+            len += if self.next_header == NextHeader::Compressed {
+                0 // The next header is compressed (we don't need to inline what the next header is)
+            } else {
+                1 // The next header field is inlined
+            };
+
+            // Add the lenght of the source address
+            len += if self.src_addr == ipv6::Address::UNSPECIFIED {
                 0
             } else if self.src_addr.is_link_local() {
                 let src = self.src_addr.as_bytes();
@@ -809,7 +819,10 @@ pub mod iphc {
                 }
             } else {
                 16
-            } + if self.dst_addr.is_multicast() {
+            };
+            
+            // Add the size of the destination header
+            len += if self.dst_addr.is_multicast() {
                 let dst = self.dst_addr.as_bytes();
                 if dst[1] == 0x02 && dst[2..15] == [0; 13] {
                     1
@@ -849,7 +862,13 @@ pub mod iphc {
                 } else {
                     16
                 }
-            }
+            };
+
+            // Add the size of the traffic flow.
+            // TODO: implement traffic flow for sixlowpan
+            len += 0;
+
+            len
         }
 
         /// Emit a high-level representation into a LOWPAN_IPHC packet.

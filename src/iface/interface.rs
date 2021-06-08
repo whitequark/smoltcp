@@ -972,11 +972,11 @@ impl<'a> InterfaceInner<'a> {
                 let iphc_packet = SixlowpanIphcPacket::new_checked(payload)?;
                 let iphc_repr = SixlowpanIphcRepr::parse(&iphc_packet, ieee802154_repr.src_addr, ieee802154_repr.dst_addr)?;
 
-                if !iphc_repr.src_addr.is_unicast() {
-                    // Discard packets with non-unicast source addresses.
-                    net_debug!("non-unicast source address");
-                    return Err(Error::Malformed)
-                }
+                //if !iphc_repr.src_addr.is_unicast() {
+                    //// Discard packets with non-unicast source addresses.
+                    //net_debug!("non-unicast source address");
+                    //return Err(Error::Malformed)
+                //}
 
                 let payload = iphc_packet.payload();
                 let ip_repr = IpRepr::Sixlowpan(iphc_repr);
@@ -1343,6 +1343,17 @@ impl<'a> InterfaceInner<'a> {
                         let icmp_reply_repr = Icmpv6Repr::EchoReply { ident, seq_no, data };
                         Ok(self.icmpv6_reply(ipv6_repr, icmp_reply_repr))
                     },
+                    #[cfg(feature = "medium-sixlowpan")]
+                    IpRepr::Sixlowpan(sixlowpan_repr) => {
+                        let icmp_reply_repr = Icmpv6Repr::EchoReply { ident, seq_no, data };
+                        Ok(self.icmpv6_reply(Ipv6Repr {
+                            src_addr: sixlowpan_repr.src_addr,
+                            dst_addr: sixlowpan_repr.dst_addr,
+                            next_header: IpProtocol::Unknown(0) ,
+                            payload_len: data.len(),
+                            hop_limit: 64,
+                        }, icmp_reply_repr))
+                    }
                     _ => Err(Error::Unrecognized),
                 }
             }
@@ -1351,9 +1362,19 @@ impl<'a> InterfaceInner<'a> {
             Icmpv6Repr::EchoReply { .. } => Ok(None),
 
             // Forward any NDISC packets to the ndisc packet handler
-            #[cfg(feature = "medium-ethernet")]
+            #[cfg(any(feature = "medium-ethernet", feature = "medium-sixlowpan"))]
             Icmpv6Repr::Ndisc(repr) if ip_repr.hop_limit() == 0xff => match ip_repr {
                 IpRepr::Ipv6(ipv6_repr) => self.process_ndisc(_timestamp, ipv6_repr, repr),
+                #[cfg(feature = "medium-sixlowpan")]
+                IpRepr::Sixlowpan(sixlowpan_repr) => {
+                    self.process_ndisc(_timestamp, Ipv6Repr {
+                        src_addr: sixlowpan_repr.src_addr,
+                        dst_addr: sixlowpan_repr.dst_addr,
+                        next_header: IpProtocol::Unknown(0),
+                        payload_len: 10, // 2 + 8
+                        hop_limit: sixlowpan_repr.hop_limit,
+                    }, repr)
+                }
                 _ => Ok(None)
             },
 
@@ -1367,7 +1388,7 @@ impl<'a> InterfaceInner<'a> {
         }
     }
 
-    #[cfg(all(feature = "medium-ethernet", feature = "proto-ipv6"))]
+    #[cfg(all(any(feature = "medium-ethernet", feature = "medium-sixlowpan"), feature = "proto-ipv6"))]
     fn process_ndisc<'frame>(&mut self, timestamp: Instant, ip_repr: Ipv6Repr,
                              repr: NdiscRepr<'frame>) -> Result<Option<IpPacket<'frame>>> {
         match repr {
@@ -1395,7 +1416,10 @@ impl<'a> InterfaceInner<'a> {
                     let advert = Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                         flags: NdiscNeighborFlags::SOLICITED,
                         target_addr: target_addr,
-                        lladdr: Some(self.ethernet_addr.unwrap())
+                        #[cfg(feature = "medium-ethernet")]
+                        lladdr: Some(self.ethernet_addr.unwrap().into()),
+                        #[cfg(feature = "medium-sixlowpan")]
+                        lladdr: Some(self.ieee802154_addr.unwrap().into()),
                     });
                     let ip_repr = Ipv6Repr {
                         src_addr: target_addr,
@@ -1810,7 +1834,7 @@ impl<'a> InterfaceInner<'a> {
 
                 let solicit = Icmpv6Repr::Ndisc(NdiscRepr::NeighborSolicit {
                     target_addr: dst_addr,
-                    lladdr: Some(self.ethernet_addr.unwrap()),
+                    lladdr: Some(self.ethernet_addr.unwrap().into()),
                 });
 
                 let packet = IpPacket::Icmpv6((
@@ -1888,7 +1912,7 @@ impl<'a> InterfaceInner<'a> {
                 // Get the hardware dst address from the neighbor cache
                 let dst_addr = match self.neighbor_cache.as_mut().unwrap().lookup(&ip_repr.dst_addr(), timestamp) {
                     NeighborAnswer::Found(HardwareAddress::Ieee802154(addr)) => addr,
-                    _ => todo!(),
+                    r => todo!("{:?}", r),
                 };
 
                 let ack_request = dst_addr.is_unicast();
@@ -1899,17 +1923,17 @@ impl<'a> InterfaceInner<'a> {
                     frame_type: Ieee802154FrameType::Data,
                     security_enabled: false,
                     frame_pending: false,
-                    ack_request,
+                    ack_request: false,
                     sequence_number: Some(self.sequence_no),
-                    pan_id_compression: false,
+                    pan_id_compression: true,
                     frame_version: Ieee802154FrameVersion::Ieee802154_2006,
-                    dst_pan_id: Some(Ieee802154Pan(0xabcd)),
+                    dst_pan_id: Some(Ieee802154Pan(0xbeef)),
                     dst_addr: Some(dst_addr),
-                    src_pan_id: Some(Ieee802154Pan(0xabcd)),
+                    src_pan_id: Some(Ieee802154Pan(0xbeef)),
                     src_addr: self.ieee802154_addr,
                 };
 
-                self.sequence_no += 1;
+                self.sequence_no = self.sequence_no.wrapping_add(1);
 
                 let src_addr = match ip_repr.src_addr() {
                     IpAddress::Ipv6(addr) => addr,
@@ -1921,13 +1945,25 @@ impl<'a> InterfaceInner<'a> {
                     _ => unreachable!(),
                 };
 
+                let next_header = match &packet {
+                    IpPacket::Udp(_) => SixlowpanNextHeader::Compressed,
+                    IpPacket::Icmpv6(_) => SixlowpanNextHeader::Uncompressed(IpProtocol::Icmpv6),
+                    _ => todo!(),
+                };
+
+                let hop_limit = match packet {
+                    IpPacket::Icmpv6((_, Icmpv6Repr::Ndisc(_))) => 255,
+                    IpPacket::Icmpv6((_, Icmpv6Repr::EchoReply { .. })) => 64,
+                    _ => todo!(),
+                };
+
                 let iphc_repr = SixlowpanIphcRepr  {
                     src_addr,
                     ll_src_addr: self.ieee802154_addr,
                     dst_addr,
                     ll_dst_addr: Some(Ieee802154Address::BROADCAST),
-                    next_header: SixlowpanNextHeader::Compressed,
-                    hop_limit: 64,
+                    next_header,
+                    hop_limit,
                 };
 
 
@@ -1939,9 +1975,13 @@ impl<'a> InterfaceInner<'a> {
                         let udp_repr = SixlowpanUdpRepr(*udp_repr);
                         tx_len += udp_repr.buffer_len();
                     }
+                    IpPacket::Icmpv6((_, icmp)) => {
+                        tx_len += icmp.buffer_len();
+                    }
                     _ => todo!(),
                 }
 
+                tx_len += 2; // FCS
 
                 tx_token.consume(timestamp, tx_len, |mut tx_buffer| {
                     let mut ieee_packet = Ieee802154Frame::new_unchecked(&mut tx_buffer);
@@ -1961,11 +2001,26 @@ impl<'a> InterfaceInner<'a> {
                             let mut udp_packet = SixlowpanUdpPacket::new_unchecked(&mut tx_buffer[start..]);
 
                             udp_repr.emit(&mut udp_packet, &iphc_repr.src_addr, &iphc_repr.dst_addr);
+                        }
+                        IpPacket::Icmpv6((_, icmp_repr)) => {
+                            let mut icmp_packet = Icmpv6Packet::new_unchecked(&mut tx_buffer[start..tx_len-2]);
 
-                            Ok(())
+                            icmp_repr.emit(
+                                &iphc_repr.src_addr.into(),
+                                &iphc_repr.dst_addr.into(),
+                                &mut icmp_packet,
+                                &self.device_capabilities.checksum
+                            );
+
                         }
                         _ => todo!(),
                     }
+
+                    let fcs = crate::wire::ieee802154::calculate_crc(&tx_buffer[..tx_len-2]);
+                    tx_buffer[tx_len-1] = ((fcs >> 8) & 0xff) as u8;
+                    tx_buffer[tx_len-2] = (fcs & 0xff) as u8;
+
+                    Ok(())
                 })
             }
         }

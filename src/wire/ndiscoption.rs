@@ -4,7 +4,14 @@ use bitflags::bitflags;
 
 use crate::{Error, Result};
 use crate::time::Duration;
-use crate::wire::{EthernetAddress, Ipv6Address, Ipv6Packet, Ipv6Repr};
+use crate::wire::{Ipv6Address, Ipv6Packet, Ipv6Repr};
+
+#[cfg(feature = "medium-ethernet")]
+use crate::wire::EthernetAddress;
+#[cfg(feature = "medium-sixlowpan")]
+use crate::wire::Ieee802154Address;
+
+use crate::wire::HardwareAddress;
 
 enum_with_unknown! {
     /// NDISC Option Type
@@ -83,7 +90,10 @@ mod field {
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
     // Link-Layer Address
+    #[cfg(feature = "medium-ethernet")]
     pub const LL_ADDR:       Field = 2..8;
+    #[cfg(feature = "medium-sixlowpan")]
+    pub const LL_ADDR:       Field = 2..10;
 
     // Prefix Information Option fields.
     //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -219,9 +229,19 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
 impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Return the Source/Target Link-layer Address.
     #[inline]
-    pub fn link_layer_addr(&self) -> EthernetAddress {
+    pub fn link_layer_addr(&self) -> HardwareAddress {
         let data = self.buffer.as_ref();
-        EthernetAddress::from_bytes(&data[field::LL_ADDR])
+        let addr = &data[field::LL_ADDR];
+
+        #[cfg(feature = "medium-ethernet")]
+        {
+            HardwareAddress::Ethernet(EthernetAddress::from_bytes(addr))
+        }
+
+        #[cfg(feature = "medium-sixlowpan")]
+        {
+            HardwareAddress::Ieee802154(Ieee802154Address::from_bytes(addr))
+        }
     }
 }
 
@@ -302,9 +322,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the Source/Target Link-layer Address.
     #[inline]
-    pub fn set_link_layer_addr(&mut self, addr: EthernetAddress) {
+    pub fn set_link_layer_addr(&mut self, addr: HardwareAddress) {
         let data = self.buffer.as_mut();
-        data[field::LL_ADDR].copy_from_slice(addr.as_bytes())
+        let data = &mut data[field::LL_ADDR];
+        data.copy_from_slice(&addr.as_bytes());
     }
 }
 
@@ -415,8 +436,8 @@ pub struct RedirectedHeader<'a> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Repr<'a> {
-    SourceLinkLayerAddr(EthernetAddress),
-    TargetLinkLayerAddr(EthernetAddress),
+    SourceLinkLayerAddr(HardwareAddress),
+    TargetLinkLayerAddr(HardwareAddress),
     PrefixInformation(PrefixInformation),
     RedirectedHeader(RedirectedHeader<'a>),
     Mtu(u32),
@@ -513,12 +534,26 @@ impl<'a> Repr<'a> {
         match *self {
             Repr::SourceLinkLayerAddr(addr) => {
                 opt.set_option_type(Type::SourceLinkLayerAddr);
-                opt.set_data_len(1);
+                #[cfg(feature = "medium-ethernet")]
+                {
+                    opt.set_data_len(1);
+                }
+                #[cfg(feature = "medium-sixlowpan")]
+                {
+                    opt.set_data_len(2);
+                }
                 opt.set_link_layer_addr(addr);
             },
             Repr::TargetLinkLayerAddr(addr) => {
                 opt.set_option_type(Type::TargetLinkLayerAddr);
-                opt.set_data_len(1);
+                #[cfg(feature = "medium-ethernet")]
+                {
+                    opt.set_data_len(1);
+                }
+                #[cfg(feature = "medium-sixlowpan")]
+                {
+                    opt.set_data_len(2);
+                }
                 opt.set_link_layer_addr(addr);
             },
             Repr::PrefixInformation(PrefixInformation {

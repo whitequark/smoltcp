@@ -82,7 +82,7 @@ mod ethernet;
 #[cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 mod arp;
 #[cfg(feature = "ieee802154")]
-mod ieee802154;
+pub mod ieee802154;
 #[cfg(feature = "sixlowpan")]
 mod sixlowpan;
 pub(crate) mod ip;
@@ -106,9 +106,9 @@ mod icmpv6;
 mod icmp;
 #[cfg(feature = "proto-igmp")]
 mod igmp;
-#[cfg(all(feature = "proto-ipv6", feature = "medium-ethernet"))]
+#[cfg(all(feature = "proto-ipv6", any(feature = "medium-ethernet", feature = "medium-sixlowpan")))]
 mod ndisc;
-#[cfg(all(feature = "proto-ipv6", feature = "medium-ethernet"))]
+#[cfg(all(feature = "proto-ipv6", any(feature = "medium-ethernet", feature = "medium-sixlowpan")))]
 mod ndiscoption;
 #[cfg(feature = "proto-ipv6")]
 mod mld;
@@ -217,12 +217,12 @@ pub use self::icmpv6::{Message as Icmpv6Message,
 pub use self::icmp::Repr as IcmpRepr;
 
 
-#[cfg(all(feature = "proto-ipv6", feature = "medium-ethernet"))]
+#[cfg(all(feature = "proto-ipv6", any(feature = "medium-ethernet", feature = "medium-sixlowpan")))]
 pub use self::ndisc::{Repr as NdiscRepr,
                       RouterFlags as NdiscRouterFlags,
                       NeighborFlags as NdiscNeighborFlags};
 
-#[cfg(all(feature = "proto-ipv6", feature = "medium-ethernet"))]
+#[cfg(all(feature = "proto-ipv6", any(feature = "medium-ethernet", feature = "medium-sixlowpan")))]
 pub use self::ndiscoption::{NdiscOption,
                             Repr as NdiscOptionRepr,
                             Type as NdiscOptionType,
@@ -259,6 +259,16 @@ pub enum HardwareAddress {
 }
 
 impl HardwareAddress {
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => addr.as_bytes(),
+            #[cfg(feature = "medium-sixlowpan")]
+            HardwareAddress::Ieee802154(addr) => addr.as_bytes(),
+            _ => todo!(),
+        }
+    }
+
     /// Query wether the address is an unicast address.
     pub fn is_unicast(&self) -> bool {
         match self {
