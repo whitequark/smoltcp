@@ -11,7 +11,7 @@ use std::env;
 use std::process;
 use getopts::{Options, Matches};
 
-use smoltcp::phy::{Device, EthernetTracer, FaultInjector};
+use smoltcp::phy::{Device, Tracer, FaultInjector};
 use smoltcp::phy::{PcapWriter, PcapSink, PcapMode, PcapLinkType};
 use smoltcp::time::Duration;
 
@@ -52,7 +52,7 @@ pub fn add_middleware_options(opts: &mut Options, _free: &mut Vec<&str>) {
 }
 
 pub fn parse_middleware_options<D>(matches: &mut Matches, device: D, loopback: bool)
-        -> FaultInjector<EthernetTracer<PcapWriter<D, Rc<PcapSink>>>>
+        -> FaultInjector<Tracer<PcapWriter<D, Rc<PcapSink>>>>
     where D: for<'a> Device<'a>
 {
     let drop_chance      = matches.opt_str("drop-chance").map(|s| u8::from_str(&s).unwrap())
@@ -78,9 +78,8 @@ pub fn parse_middleware_options<D>(matches: &mut Matches, device: D, loopback: b
     let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
 
     let device = PcapWriter::new(device, Rc::new(RefCell::new(pcap_writer)) as Rc<PcapSink>,
-                                 if loopback { PcapMode::TxOnly } else { PcapMode::Both },
-                                 PcapLinkType::Ethernet);
-    let device = EthernetTracer::new(device, |_timestamp, _printer| {
+                                 if loopback { PcapMode::TxOnly } else { PcapMode::Both });
+    let device = Tracer::new(device, |_timestamp, _printer| {
         #[cfg(feature = "log")]
         trace!("{}", _printer);
     });

@@ -310,6 +310,16 @@ pub trait Device<'a> {
 
     /// Get a description of device capabilities.
     fn capabilities(&self) -> DeviceCapabilities;
+
+    /// Place the device in a on or running state.
+    fn up(&'a mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Place the device in a off or idle state.
+    fn down(&'a mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A token to receive a single network packet.

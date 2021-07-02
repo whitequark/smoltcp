@@ -20,7 +20,7 @@ mod utils {
 mod mock {
     use std::sync::Arc;
     use std::sync::atomic::{Ordering, AtomicUsize};
-	use smoltcp::time::{Duration, Instant};
+    use smoltcp::time::{Duration, Instant};
 
     // should be AtomicU64 but that's unstable
     #[derive(Debug, Clone)]
@@ -119,8 +119,8 @@ fuzz_target!(|data: &[u8]| {
         utils::add_middleware_options(&mut opts, &mut free);
 
         let mut matches = utils::parse_options(&opts, free);
-        let device = utils::parse_middleware_options(&mut matches, Loopback::new(Medium::Ethernet),
-                                                     /*loopback=*/true);
+        let loopback = Loopback::new(Medium::Ethernet);
+        let device = utils::parse_middleware_options(&mut matches, loopback, /*loopback=*/ true);
 
         smoltcp::phy::FuzzInjector::new(device,
                                         EmptyFuzzer(),
@@ -165,6 +165,9 @@ fuzz_target!(|data: &[u8]| {
     let mut did_listen  = false;
     let mut did_connect = false;
     let mut done = false;
+
+    iface.up().expect("Failed to set device up");
+
     while !done && clock.elapsed() < Instant::from_millis(4_000) {
         let _ = iface.poll(&mut socket_set, clock.elapsed());
 

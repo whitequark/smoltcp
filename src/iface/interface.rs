@@ -568,6 +568,24 @@ where
         &mut self.inner.routes
     }
 
+    /// Trigger the startup sequence for the interface.
+    ///
+    /// This method will call [Device::up] on the backing device.
+    ///
+    /// [Device::up]: ../phy/trait.Device.html#method.up
+    pub fn up(&mut self) -> Result<()> {
+        self.device.up()
+    }
+
+    /// Trigger the shutdown sequence for the interface.
+    ///
+    /// This method will call [Device::down] on the backing device.
+    ///
+    /// [Device::down]: ../phy/trait.Device.html#method.down
+    pub fn down(&mut self) -> Result<()> {
+        self.device.down()
+    }
+
     /// Transmit packets queued in the given sockets, and receive packets queued
     /// in the device.
     ///
@@ -2107,7 +2125,9 @@ mod test {
         let iface_builder = InterfaceBuilder::new(device).ip_addrs(ip_addrs);
         #[cfg(feature = "proto-igmp")]
         let iface_builder = iface_builder.ipv4_multicast_groups(BTreeMap::new());
-        let iface = iface_builder.finalize();
+        let mut iface = iface_builder.finalize();
+
+        iface.up().expect("Failed to bring device up!");
 
         (iface, SocketSet::new(vec![]))
     }
@@ -2131,7 +2151,9 @@ mod test {
             .ip_addrs(ip_addrs);
         #[cfg(feature = "proto-igmp")]
         let iface_builder = iface_builder.ipv4_multicast_groups(BTreeMap::new());
-        let iface = iface_builder.finalize();
+        let mut iface = iface_builder.finalize();
+
+        iface.up().expect("Failed to bring device up!");
 
         (iface, SocketSet::new(vec![]))
     }
@@ -2167,6 +2189,36 @@ mod test {
     #[cfg(all(feature = "medium-ethernet"))]
     fn test_builder_initialization_panic() {
         InterfaceBuilder::new(Loopback::new(Medium::Ethernet)).finalize();
+    }
+
+    #[test]
+    #[cfg(feature = "medium-ethernet")]
+    fn test_iface_updown() {
+        let (mut iface, _) = create_loopback_ethernet();
+
+        iface.down().unwrap();
+
+        assert!(iface.device_mut().transmit().is_none());
+
+        iface.up().unwrap();
+
+        let tx_token = match iface.device_mut().transmit() {
+            Some(token) => token,
+            None => panic!("Failed to bring up device!"),
+        };
+
+        let buf = [0x00; 42];
+
+        tx_token
+            .consume(Instant::from_millis(0), buf.len(), |tx_buf| {
+                tx_buf.copy_from_slice(&buf[..]);
+                Ok(())
+            })
+            .unwrap();
+
+        iface.down().unwrap();
+
+        assert!(iface.device_mut().receive().is_none());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::Result;
 /// A loopback device.
 #[derive(Debug)]
 pub struct Loopback {
-    queue: VecDeque<Vec<u8>>,
+    queue: Option<VecDeque<Vec<u8>>>,
     medium: Medium,
 }
 
@@ -23,7 +23,7 @@ impl Loopback {
     /// in FIFO order.
     pub fn new(medium: Medium) -> Loopback {
         Loopback {
-            queue: VecDeque::new(),
+            queue: None,
             medium,
         }
     }
@@ -42,19 +42,31 @@ impl<'a> Device<'a> for Loopback {
     }
 
     fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
-        self.queue.pop_front().map(move |buffer| {
-            let rx = RxToken { buffer };
-            let tx = TxToken {
-                queue: &mut self.queue,
-            };
-            (rx, tx)
-        })
+        match self.queue {
+            Some(ref mut queue) => queue.pop_front().map(move |buffer| {
+                let rx = RxToken { buffer };
+                let tx = TxToken { queue: queue };
+                (rx, tx)
+            }),
+            None => None,
+        }
     }
 
     fn transmit(&'a mut self) -> Option<Self::TxToken> {
-        Some(TxToken {
-            queue: &mut self.queue,
-        })
+        match self.queue {
+            Some(ref mut queue) => Some(TxToken { queue: queue }),
+            None => None,
+        }
+    }
+
+    fn up(&'a mut self) -> Result<()> {
+        self.queue = Some(VecDeque::new());
+        Ok(())
+    }
+
+    fn down(&'a mut self) -> Result<()> {
+        self.queue = None;
+        Ok(())
     }
 }
 
