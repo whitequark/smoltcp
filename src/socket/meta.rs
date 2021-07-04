@@ -44,7 +44,7 @@ impl Meta {
     /// in milliseconds.
     ///
     /// See also `iface::NeighborCache::SILENT_TIME`.
-    pub(crate) const DISCOVERY_SILENT_TIME: Duration = Duration { millis: 3_000 };
+    pub(crate) const DISCOVERY_SILENT_TIME: Duration = Duration::from_millis(3_000);
 
     pub(crate) fn poll_at<F>(&self, socket_poll_at: PollAt, has_neighbor: F) -> PollAt
     where
