@@ -71,7 +71,7 @@ impl<'a> Cache<'a> {
     pub(crate) const SILENT_TIME: Duration = Duration::from_millis(1_000);
 
     /// Neighbor entry lifetime, in milliseconds.
-    pub(crate) const ENTRY_LIFETIME: Duration = Duration::from_millis( 60_000);
+    pub(crate) const ENTRY_LIFETIME: Duration = Duration::from_millis(60_000);
 
     /// Default number of entries in the cache before GC kicks in
     pub(crate) const GC_THRESHOLD: usize = 1024;
