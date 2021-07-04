@@ -216,6 +216,6 @@ impl Context {
             max_transmission_unit: 1500,
         },
         ethernet_address: None,
-        now: Instant { millis: 0 },
+        now: Instant::from_millis_const(0),
     };
 }

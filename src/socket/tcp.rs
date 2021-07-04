@@ -185,8 +185,8 @@ enum Timer {
     },
 }
 
-const ACK_DELAY_DEFAULT: Duration = Duration { millis: 10 };
-const CLOSE_DELAY: Duration = Duration { millis: 10_000 };
+const ACK_DELAY_DEFAULT: Duration = Duration::from_millis(10);
+const CLOSE_DELAY: Duration = Duration::from_millis(10_000);
 
 impl Default for Timer {
     fn default() -> Timer {

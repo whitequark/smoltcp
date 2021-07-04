@@ -171,7 +171,7 @@ fn main() {
         }
 
         match iface.poll_delay(&socket_set, clock.elapsed()) {
-            Some(Duration { millis: 0 }) => debug!("resuming"),
+            Some(Duration::ZERO) => debug!("resuming"),
             Some(delay) => {
                 debug!("sleeping for {} ms", delay);
                 clock.advance(delay)
